@@ -13,11 +13,18 @@ Việt vì tiếng Việt viết rời từng âm tiết.
 from __future__ import annotations
 
 
+import sacrebleu
+
 def cham_bleu(du_doan: list[str], tham_chieu: list[str]) -> tuple[float, str]:
     """Returns: (điểm BLEU, chuỗi chữ ký của sacrebleu)."""
-    raise NotImplementedError("TASK 16 — My")
-
+    # SacreBLEU expects a list of references for each hypothesis.
+    # We only have one reference per hypothesis, so we wrap it in a list.
+    refs = [tham_chieu]
+    bleu = sacrebleu.corpus_bleu(du_doan, refs)
+    return bleu.score, bleu.signature
 
 def cham_chrf(du_doan: list[str], tham_chieu: list[str]) -> tuple[float, str]:
     """chrF++ (word_order=2). Returns: (điểm, chuỗi chữ ký)."""
-    raise NotImplementedError("TASK 16 — My")
+    refs = [tham_chieu]
+    chrf = sacrebleu.corpus_chrf(du_doan, refs, word_order=2)
+    return chrf.score, chrf.signature

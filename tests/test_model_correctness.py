@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.skip(reason="TASK 10 — My. Bỏ skip khi TASK 05-09 đã xong.")
+# pytestmark = pytest.mark.skip(reason="TASK 10 — My. Bỏ skip khi TASK 05-09 đã xong.")
 
 
 # ---------------------------------------------------------------- bài 1
@@ -46,8 +46,30 @@ def test_01_causal_mask_khong_cho_nhin_ve_sau():
     ĐÂY LÀ LỖI NGUY HIỂM NHẤT của cả đồ án: mô hình nhìn trộm được đáp án nên
     loss lúc train giảm rất đẹp, nhưng lúc dịch thật thì ra rác.
     """
-    raise NotImplementedError
-
+    from nmt.utils import nap_config
+    from nmt.model.transformer import TransformerNMT
+    import torch
+    
+    cfg = nap_config("configs/base.yaml")
+    model = TransformerNMT(cfg)
+    model.eval()
+    
+    tgt_ids = torch.randint(1, cfg.du_lieu.vocab_size, (1, 10))
+    src_ids = torch.randint(1, cfg.du_lieu.vocab_size, (1, 5))
+    
+    from nmt.model.masking import tao_causal_mask
+    tgt_mask = tao_causal_mask(10)
+    
+    out1 = model(src_ids, tgt_ids, tgt_mask=tgt_mask)
+    
+    t = 4
+    tgt_ids_modified = tgt_ids.clone()
+    tgt_ids_modified[0, t+1:] = torch.randint(1, cfg.du_lieu.vocab_size, (1, 10 - t - 1))
+    
+    out2 = model(src_ids, tgt_ids_modified, tgt_mask=tgt_mask)
+    
+    # Đầu ra tại vị trí <= t phải không đổi
+    assert torch.allclose(out1[0, :t+1, :], out2[0, :t+1, :], atol=1e-5)
 
 # ---------------------------------------------------------------- bài 2
 def test_02_padding_mask_co_tac_dung():
@@ -56,8 +78,28 @@ def test_02_padding_mask_co_tac_dung():
 
     Bắt lỗi: quên áp padding mask, hoặc áp sai chiều.
     """
-    raise NotImplementedError
-
+    from nmt.utils import nap_config
+    from nmt.model.transformer import TransformerNMT
+    from nmt.model.masking import tao_padding_mask
+    import torch
+    
+    cfg = nap_config("configs/base.yaml")
+    model = TransformerNMT(cfg)
+    model.eval()
+    
+    src_ids = torch.randint(1, cfg.du_lieu.vocab_size, (1, 5))
+    tgt_ids = torch.randint(1, cfg.du_lieu.vocab_size, (1, 5))
+    
+    out1 = model(src_ids, tgt_ids)
+    
+    # Thêm token đệm
+    src_ids_pad = torch.cat([src_ids, torch.zeros(1, 3, dtype=torch.long)], dim=1)
+    src_mask = tao_padding_mask(src_ids_pad, pad_id=0)
+    
+    out2 = model(src_ids_pad, tgt_ids, src_mask=src_mask)
+    
+    # Biểu diễn của các từ thật bắt buộc không đổi
+    assert torch.allclose(out1, out2, atol=1e-5)
 
 # ---------------------------------------------------------------- bài 3
 def test_03_trong_so_attention_hop_le():
@@ -67,8 +109,25 @@ def test_03_trong_so_attention_hop_le():
     Bắt lỗi: nhầm trục khi tính softmax. Lỗi này rất hay gặp và gần như KHÔNG
     THỂ phát hiện bằng mắt.
     """
-    raise NotImplementedError
-
+    from nmt.utils import nap_config
+    from nmt.model.attention import MultiHeadAttention
+    from nmt.model.masking import tao_causal_mask
+    import torch
+    
+    cfg = nap_config("configs/base.yaml")
+    attn = MultiHeadAttention(cfg.mo_hinh.d_model, cfg.mo_hinh.so_head)
+    attn.eval()
+    
+    x = torch.randn(2, 5, cfg.mo_hinh.d_model)
+    mask = tao_causal_mask(5)
+    
+    out, weights = attn(x, x, x, mask)
+    
+    assert torch.allclose(weights.sum(dim=-1), torch.ones_like(weights.sum(dim=-1)), atol=1e-5)
+    assert (weights >= 0).all()
+    
+    upper_tri = torch.triu(torch.ones(5, 5), diagonal=1).bool()
+    assert (weights[..., upper_tri] == 0).all()
 
 # ---------------------------------------------------------------- bài 4
 def test_04_rope_giu_do_dai_va_ma_hoa_dung_vi_tri_tuong_doi():
@@ -87,8 +146,31 @@ def test_04_rope_giu_do_dai_va_ma_hoa_dung_vi_tri_tuong_doi():
     CẢNH BÁO: bài này chạy ở float32 nên vẫn báo ĐẠT ngay cả khi bảng góc quay
     bị tính ở fp16. Bài 12 mới bắt được lỗi đó.
     """
-    raise NotImplementedError
-
+    from nmt.model.positional import RoPE
+    import torch
+    d_head = 64
+    rope = RoPE(d_head=d_head)
+    
+    x = torch.randn(1, 1, 15, d_head)
+    rx = rope(x)
+    
+    # 1. Độ dài vector không đổi
+    assert torch.allclose(x.norm(dim=-1), rx.norm(dim=-1), atol=1e-5)
+    
+    # 2. Vị trí 0 là phép đồng nhất
+    assert torch.allclose(x[:, :, 0], rx[:, :, 0], atol=1e-5)
+    
+    # 3. Tích vô hướng chỉ phụ thuộc hiệu (m-n)
+    q_const = torch.randn(1, 1, 1, d_head).expand(1, 1, 15, d_head)
+    k_const = torch.randn(1, 1, 1, d_head).expand(1, 1, 15, d_head)
+    
+    rq_c = rope(q_const)
+    rk_c = rope(k_const)
+    
+    dot1 = torch.sum(rq_c[:, :, 5] * rk_c[:, :, 2], dim=-1)
+    dot2 = torch.sum(rq_c[:, :, 10] * rk_c[:, :, 7], dim=-1)
+    
+    assert torch.allclose(dot1, dot2, atol=1e-5)
 
 # ---------------------------------------------------------------- bài 5
 def test_05_gradient_chay_toi_moi_tham_so():
@@ -97,8 +179,25 @@ def test_05_gradient_chay_toi_moi_tham_so():
 
     Bắt lỗi: một nhánh mạng bị đứt khỏi đồ thị tính toán, hoặc module quên đăng ký.
     """
-    raise NotImplementedError
-
+    from nmt.utils import nap_config
+    from nmt.model.transformer import TransformerNMT
+    import torch
+    
+    cfg = nap_config("configs/base.yaml")
+    model = TransformerNMT(cfg)
+    
+    src = torch.randint(1, cfg.du_lieu.vocab_size, (2, 5))
+    tgt = torch.randint(1, cfg.du_lieu.vocab_size, (2, 5))
+    
+    out = model(src, tgt)
+    loss = out.sum()
+    loss.backward()
+    
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            assert p.grad is not None, f"Mất gradient ở {name}"
+            assert not torch.isnan(p.grad).any(), f"Gradient NaN ở {name}"
+            assert p.grad.abs().sum() > 0, f"Gradient bằng 0 ở {name}"
 
 # ---------------------------------------------------------------- bài 6
 def test_06_doi_chieu_so_voi_cai_dat_tham_chieu_pytorch():
@@ -115,8 +214,42 @@ def test_06_doi_chieu_so_voi_cai_dat_tham_chieu_pytorch():
     đại không còn khớp với lớp đó nên nhóm chuyển sang đối chiếu TỪNG THÀNH PHẦN.
     Cách này tốt hơn vì khi lệch thì biết ngay lệch ở đâu.
     """
-    raise NotImplementedError
-
+    import torch
+    import torch.nn.functional as F
+    from torch.nn import RMSNorm as TorchRMSNorm
+    from nmt.model.normalization import RMSNorm as MyRMSNorm
+    from nmt.model.attention import MultiHeadAttention
+    from nmt.utils import nap_config
+    
+    d_model = 64
+    x = torch.randn(2, 5, d_model)
+    
+    # 1. RMSNorm
+    my_norm = MyRMSNorm(d_model)
+    torch_norm = TorchRMSNorm(d_model)
+    torch_norm.weight.data = my_norm.weight.data.clone()
+    
+    out_my = my_norm(x)
+    out_torch = torch_norm(x)
+    assert torch.allclose(out_my, out_torch, atol=1e-5)
+    
+    # 2. Attention
+    cfg = nap_config("configs/base.yaml")
+    attn = MultiHeadAttention(cfg.mo_hinh.d_model, cfg.mo_hinh.so_head)
+    q = torch.randn(2, 4, cfg.mo_hinh.d_model)
+    k = torch.randn(2, 4, cfg.mo_hinh.d_model)
+    v = torch.randn(2, 4, cfg.mo_hinh.d_model)
+    
+    out_my, _ = attn(q, k, v, mask=None, rope=None)
+    
+    q_proj = attn.w_q(q).view(2, 4, attn.so_head, attn.d_head).transpose(1, 2)
+    k_proj = attn.w_k(k).view(2, 4, attn.so_head, attn.d_head).transpose(1, 2)
+    v_proj = attn.w_v(v).view(2, 4, attn.so_head, attn.d_head).transpose(1, 2)
+    out_torch = F.scaled_dot_product_attention(q_proj, k_proj, v_proj)
+    out_torch = out_torch.transpose(1, 2).reshape(2, 4, cfg.mo_hinh.d_model)
+    out_torch = attn.w_o(out_torch)
+    
+    assert torch.allclose(out_my, out_torch, atol=1e-5)
 
 # ---------------------------------------------------------------- bài 7
 @pytest.mark.slow
@@ -127,8 +260,10 @@ def test_07_hoc_overfit_50_cau():
     Bài kiểm tra tổng hợp cuối cùng, theo đúng gợi ý của anh Huy.
     Chạy đầy đủ bằng scripts/overfit_sanity.py để lấy cả biểu đồ loss.
     """
-    raise NotImplementedError
-
+    import subprocess
+    import sys
+    res = subprocess.run([sys.executable, "scripts/overfit_sanity.py"], capture_output=True, text=True)
+    assert res.returncode == 0, f"Overfit script failed: {res.stderr}"
 
 # ---------------------------------------------------------------- bài 8
 def test_08_rmsnorm_chuan_hoa_dung():
@@ -142,8 +277,19 @@ def test_08_rmsnorm_chuan_hoa_dung():
     Bắt lỗi: cài nhầm thành LayerNorm (lỡ trừ trung bình), quên căn bậc hai,
     quên hằng số epsilon chống chia cho 0.
     """
-    raise NotImplementedError
-
+    from nmt.model.normalization import RMSNorm
+    import torch
+    d_model = 64
+    norm = RMSNorm(d_model)
+    
+    x = torch.randn(2, 5, d_model)
+    out = norm(x)
+    
+    rms = (out ** 2).mean(dim=-1)
+    assert torch.allclose(rms, torch.ones_like(rms), atol=1e-4)
+    
+    out2 = norm(x + 10.0)
+    assert not torch.allclose(out, out2, atol=1e-4)
 
 # ---------------------------------------------------------------- bài 9
 def test_09_swiglu_dung_cong_thuc_va_dung_so_tham_so():
@@ -156,8 +302,25 @@ def test_09_swiglu_dung_cong_thuc_va_dung_so_tham_so():
     trọng nhất là quên chỉnh d_ff xuống 688 khiến mô hình phình thêm khoảng
     12 triệu tham số mà không ai nhận ra.
     """
-    raise NotImplementedError
-
+    from nmt.model.layers import SwiGLU
+    import torch
+    import torch.nn.functional as F
+    
+    d_model = 512
+    d_ff = 688
+    swiglu = SwiGLU(d_model, d_ff)
+    
+    params = sum(p.numel() for p in swiglu.parameters())
+    assert params == 3 * d_model * d_ff, f"Expected {3*d_model*d_ff}, got {params}"
+    
+    x = torch.randn(2, d_model)
+    out = swiglu(x)
+    
+    gate = swiglu.w_gate(x)
+    up = swiglu.w_up(x)
+    expected = swiglu.w_down(F.silu(gate) * up)
+    
+    assert torch.allclose(out, expected, atol=1e-5)
 
 # ---------------------------------------------------------------- bài 10
 def test_10_duong_residual_pre_norm_thong_suot_va_co_chuan_hoa_cuoi():
@@ -174,8 +337,29 @@ def test_10_duong_residual_pre_norm_thong_suot_va_co_chuan_hoa_cuoi():
     Pre-Norm, KHÔNG làm chương trình báo lỗi, chỉ khiến giá trị phình dần qua
     từng lớp rồi mô hình mất ổn định.
     """
-    raise NotImplementedError
-
+    from nmt.utils import nap_config
+    from nmt.model.transformer import TransformerNMT
+    import torch
+    import torch.nn as nn
+    
+    cfg = nap_config("configs/base.yaml")
+    model = TransformerNMT(cfg)
+    model.eval()
+    
+    for layer in model.encoder_layers:
+        layer.self_attn.w_o.weight.data.zero_()
+        layer.ffn.w_down.weight.data.zero_()
+    
+    x = torch.randint(1, cfg.du_lieu.vocab_size, (1, 5))
+    encoded = model.encode(x, None)
+    
+    embed = model._embed(x)
+    assert not torch.allclose(encoded, embed, atol=1e-5) 
+    
+    assert not isinstance(model.encoder_final_norm, nn.Identity)
+    
+    expected = model.encoder_final_norm(embed)
+    assert torch.allclose(encoded, expected, atol=1e-5)
 
 # ---------------------------------------------------------------- bài 11
 def test_11_rope_khong_bi_ap_vao_cross_attention():
@@ -186,8 +370,34 @@ def test_11_rope_khong_bi_ap_vao_cross_attention():
     lỗi và mô hình vẫn train được, chỉ là đang mã hóa một khoảng cách vô nghĩa
     giữa hai chuỗi thuộc hai ngôn ngữ khác nhau.
     """
-    raise NotImplementedError
-
+    from nmt.utils import nap_config
+    from nmt.model.layers import DecoderLayer
+    from nmt.model.positional import RoPE
+    import torch
+    
+    cfg = nap_config("configs/base.yaml")
+    layer = DecoderLayer(cfg)
+    layer.eval()
+    
+    tgt = torch.randn(1, 2, cfg.mo_hinh.d_model)
+    mem = torch.randn(1, 2, cfg.mo_hinh.d_model)
+    
+    rope = RoPE(64)
+    
+    # Nếu RoPE bị lỡ áp dụng vào cross_attn, đầu ra sẽ thay đổi
+    # Tuy nhiên DecoderLayer không nhận rope cho cross_mask/cross_attn
+    import types
+    original_forward = layer.cross_attn.forward
+    rope_passed = [True]
+    
+    def fake_forward(self, query, key, value, mask=None, rope=None, vi_tri_bat_dau=0):
+        rope_passed[0] = rope
+        return original_forward(query, key, value, mask, rope, vi_tri_bat_dau)
+        
+    layer.cross_attn.forward = types.MethodType(fake_forward, layer.cross_attn)
+    layer.forward(tgt, mem, self_mask=None, cross_mask=None, rope=rope)
+    
+    assert rope_passed[0] is None
 
 # ---------------------------------------------------------------- bài 12
 @pytest.mark.gpu
@@ -202,4 +412,25 @@ def test_12_mo_hinh_chay_dung_o_fp16():
         2. tràn số khi tính trung bình bình phương trong RMSNorm
         3. dùng -1e9 thay vì torch.finfo(scores.dtype).min khi che mask
     """
-    raise NotImplementedError
+    if not torch.cuda.is_available():
+        pytest.skip("No GPU available")
+        
+    from nmt.utils import nap_config
+    from nmt.model.transformer import TransformerNMT
+    import torch
+    
+    cfg = nap_config("configs/base.yaml")
+    model = TransformerNMT(cfg).cuda()
+    
+    src = torch.randint(1, cfg.du_lieu.vocab_size, (2, 5)).cuda()
+    tgt = torch.randint(1, cfg.du_lieu.vocab_size, (2, 5)).cuda()
+    
+    out32 = model(src, tgt)
+    
+    with torch.autocast("cuda", dtype=torch.float16):
+        out16 = model(src, tgt)
+        
+    assert not torch.isnan(out16).any()
+    assert not torch.isinf(out16).any()
+    
+    assert torch.allclose(out32, out16.float(), rtol=1e-2, atol=1e-2)

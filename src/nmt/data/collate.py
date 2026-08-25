@@ -14,8 +14,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+# pyrefly: ignore [missing-import]
 import torch
+# pyrefly: ignore [missing-import]
 import torch.nn.functional as F
+# pyrefly: ignore [missing-import]
 from torch.utils.data import DataLoader, BatchSampler, Sampler
 
 if TYPE_CHECKING:
@@ -240,11 +243,12 @@ def tao_dataloader(
         generator=generator,
     )
 
+    from functools import partial
     return DataLoader(
         dataset,
         batch_sampler=sampler,
-        collate_fn=lambda cac_mau: ghep_batch(cac_mau, pad_id=pad_id),
         num_workers=so_worker,
+        collate_fn=partial(ghep_batch, pad_id=pad_id),
         worker_init_fn=seed_cho_worker,
         pin_memory=True,
         persistent_workers=(so_worker > 0),
