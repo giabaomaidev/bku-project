@@ -1,4 +1,4 @@
-"""TASK 15 — Huấn luyện chính thức trên IWSLT.  Người làm: Quân.
+"""TASK 15 — Huấn luyện chính thức trên IWSLT.  Người làm: Bảo.
 
 Dùng: python scripts/train.py --config configs/base.yaml
 Ablation: python scripts/train.py --config configs/ablation_a1_layernorm.yaml --seed 42
@@ -36,7 +36,7 @@ def main() -> None:
         cfg["thi_nghiem"]["seed"] = args.seed
     dat_seed(cfg.thi_nghiem.seed, cfg.thi_nghiem.deterministic)
 
-    raise NotImplementedError("TASK 15 — Quân")
+    raise NotImplementedError("TASK 15 — Bảo")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""TASK 11 — Đo tốc độ thật trên Kaggle TRƯỚC KHI cam kết phạm vi.  Người làm: Bảo.
+"""TASK 11 — Đo tốc độ thật trên Kaggle TRƯỚC KHI cam kết phạm vi.  Người làm: Quân.
 
 Đây là việc trả lời trực tiếp nhận xét thứ nhất của anh Huy, và phải làm ĐẦU TIÊN
 của Phase 3. Chạy thử 2000 bước trên tập con khoảng 10 nghìn câu, đo:
@@ -43,7 +43,7 @@ def main() -> None:
         cfg["thi_nghiem"]["seed"] = args.seed
     dat_seed(cfg.thi_nghiem.seed, cfg.thi_nghiem.deterministic)
 
-    raise NotImplementedError("TASK 11 — Bảo")
+    raise NotImplementedError("TASK 11 — Quân")
 
 
 if __name__ == "__main__":
