@@ -22,7 +22,48 @@ import torch
 @torch.no_grad()
 def greedy_search(model, src_ids, src_mask, bos_id: int, eos_id: int, do_dai_toi_da: int = 128):
     """Mỗi bước chọn luôn từ có xác suất cao nhất."""
-    raise NotImplementedError("TASK 16 — My")
+    from nmt.model.masking import tao_causal_mask
+
+    batch_size = src_ids.size(0)
+    device = src_ids.device
+
+    # Tiền tính toán bo_nho_encoder (chỉ làm 1 lần)
+    bo_nho_encoder = model.encode(src_ids, src_mask)
+
+    # Khởi tạo chuỗi đích với bos_id
+    tgt_ids = torch.full((batch_size, 1), bos_id, dtype=torch.long, device=device)
+
+    # Đánh dấu các sequence đã sinh ra eos_id
+    finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+
+    for _ in range(do_dai_toi_da):
+        seq_len = tgt_ids.size(1)
+        # Tạo causal mask cho tgt_ids hiện tại
+        tgt_mask = tao_causal_mask(seq_len, device=device)
+
+        # Giải mã một bước
+        decoder_output = model.decode(tgt_ids, bo_nho_encoder, tgt_mask, src_mask)
+        logits = model.output_projection(decoder_output)
+
+        # Lấy logits của token cuối cùng vừa được sinh ra
+        next_token_logits = logits[:, -1, :]
+        next_tokens = torch.argmax(next_token_logits, dim=-1)
+
+        # Cập nhật kết quả: nếu đã finished thì ghi đè bằng pad_id (ở đây dùng eos_id làm pad cho output)
+        # hoặc có thể giữ nguyên next_tokens cũng được vì đằng nào ta cũng sẽ cắt chuỗi ở eos_id.
+        next_tokens = next_tokens.masked_fill(finished, eos_id)
+
+        # Gắn token mới vào tgt_ids
+        tgt_ids = torch.cat([tgt_ids, next_tokens.unsqueeze(-1)], dim=-1)
+
+        # Cập nhật trạng thái finished
+        finished |= (next_tokens == eos_id)
+
+        # Dừng sớm nếu tất cả sequence đều đã sinh ra eos_id
+        if finished.all():
+            break
+
+    return tgt_ids
 
 
 @torch.no_grad()
