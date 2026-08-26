@@ -34,6 +34,12 @@ for _luong in (sys.stdout, sys.stderr):
 
 from nmt.utils import dat_seed, luu_config, nap_config
 
+# Ba ngưỡng của cổng chặn, để một chỗ duy nhất. Bài kiểm tra số 7 và tài liệu
+# đều dẫn về đây, nên sửa ngưỡng là sửa đúng một dòng.
+NGUONG_LOSS = 0.05
+NGUONG_BLEU = 90.0
+SO_BUOC_TOI_DA = 500
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -87,7 +93,7 @@ def main() -> None:
 
     losses = []
     print("Bắt đầu overfit 50 câu...")
-    for step in range(1, 501):
+    for step in range(1, SO_BUOC_TOI_DA + 1):
         optimizer.zero_grad()
         logits = model(src_ids, tgt_input, src_mask, tgt_mask)
         loss = criterion(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
@@ -98,8 +104,8 @@ def main() -> None:
         if step % 50 == 0:
             print(f"Step {step:03d} | Loss: {loss.item():.4f}")
         
-        if loss.item() < 0.05:
-            print(f"Đạt loss < 0.05 tại bước {step}!")
+        if loss.item() < NGUONG_LOSS:
+            print(f"Đạt loss < {NGUONG_LOSS} tại bước {step}!")
             break
 
     os.makedirs("results", exist_ok=True)
@@ -133,9 +139,52 @@ def main() -> None:
 
     bleu, signature = cham_bleu(du_doan, tham_chieu)
     print(f"BLEU overfit: {bleu:.2f} (Signature: {signature})")
-    
+
     df = pd.DataFrame({"Tham chiếu": tham_chieu, "Dự đoán": du_doan})
     df.to_csv("results/overfit_vi_du.csv", index=False)
+
+    # --- Cổng chặn: script PHẢI thoát khác 0 khi không đạt -------------------
+    #
+    # Không có phần này thì `scripts/overfit_sanity.py` chạy xong luôn trả về 0,
+    # kể cả khi loss chững ở 3.0 và BLEU bằng 5. Bài kiểm tra số 7 chỉ nhìn mã
+    # thoát, nên nó sẽ báo ĐẠT cho một kiến trúc hỏng — đúng cái bẫy mà cả bộ 12
+    # bài test sinh ra để tránh.
+    loss_cuoi = losses[-1]
+    dat_loss = loss_cuoi < NGUONG_LOSS
+    dat_bleu = bleu > NGUONG_BLEU
+
+    print()
+    print("=" * 62)
+    print("KẾT QUẢ CỔNG CHẶN — bài kiểm tra số 7")
+    print("=" * 62)
+    print(f"  loss cuối : {loss_cuoi:.4f}   (yêu cầu < {NGUONG_LOSS})   "
+          f"{'ĐẠT' if dat_loss else 'KHÔNG ĐẠT'}")
+    print(f"  số bước   : {len(losses)}     (tối đa {SO_BUOC_TOI_DA})")
+    print(f"  BLEU      : {bleu:.2f}     (yêu cầu > {NGUONG_BLEU})   "
+          f"{'ĐẠT' if dat_bleu else 'KHÔNG ĐẠT'}")
+    print("=" * 62)
+
+    if dat_loss and dat_bleu:
+        print("CỔNG CHẶN ĐÃ QUA. Kiến trúc đúng, được phép sang TASK 11 và TASK 15.")
+        return
+
+    print("CỔNG CHẶN CHƯA QUA. Chưa được sang khảo sát cấu hình hay huấn luyện chính thức.")
+    if not dat_loss:
+        print(
+            "\n  Loss không về được ngưỡng. Bốn nguyên nhân thường gặp, xếp theo\n"
+            "  thứ tự hay gặp nhất:\n"
+            "    1. mask sai chiều\n"
+            "    2. quên chia cho căn bậc hai của d_k\n"
+            "    3. nhầm trục khi tính softmax\n"
+            "    4. lệch một vị trí khi ghép đầu vào và đầu ra của decoder"
+        )
+    if dat_loss and not dat_bleu:
+        print(
+            "\n  Loss về 0 mà BLEU vẫn thấp thì lỗi KHÔNG nằm ở mô hình, mà nằm ở\n"
+            "  khâu giải mã hoặc ghép lại chữ — xem lại greedy_search và phần\n"
+            "  tokenizer.decode."
+        )
+    sys.exit(1)
 
 
 if __name__ == "__main__":

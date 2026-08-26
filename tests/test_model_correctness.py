@@ -262,8 +262,39 @@ def test_07_hoc_overfit_50_cau():
     """
     import subprocess
     import sys
-    res = subprocess.run([sys.executable, "scripts/overfit_sanity.py"], capture_output=True, text=True)
-    assert res.returncode == 0, f"Overfit script failed: {res.stderr}"
+    from pathlib import Path
+
+    goc = Path(__file__).resolve().parents[1]
+
+    # Bài này cần dữ liệu đã xử lý và tokenizer đã train — hai thứ nằm ngoài git.
+    # Thiếu thì SKIP chứ không FAIL: một người vừa clone repo về chạy `pytest`
+    # phải thấy xanh, nếu không thì lần nào cũng có một bài đỏ và cả nhóm quen
+    # mắt với màu đỏ, tới lúc đỏ thật lại không ai để ý.
+    can_co = [
+        goc / "data" / "processed" / "train.en",
+        goc / "data" / "processed" / "train.vi",
+        goc / "artifacts" / "tokenizer" / "tokenizer.json",
+    ]
+    thieu = [str(p.relative_to(goc)) for p in can_co if not p.exists()]
+    if thieu:
+        pytest.skip(
+            f"Thiếu {', '.join(thieu)}. Chạy scripts/prepare_data.py và "
+            "scripts/train_tokenizer.py trước."
+        )
+
+    res = subprocess.run(
+        [sys.executable, "scripts/overfit_sanity.py"],
+        cwd=goc, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+
+    # Script tự kiểm cả hai ngưỡng (loss < 0.05, BLEU > 90) rồi sys.exit(1) khi
+    # không đạt, nên mã thoát ở đây thực sự phản ánh cổng chặn. Trước khi
+    # overfit_sanity.py có phần đó, assert này báo ĐẠT cho cả kiến trúc hỏng.
+    assert res.returncode == 0, (
+        "Cổng chặn overfit 50 câu KHÔNG QUA.\n"
+        f"--- stdout ---\n{res.stdout[-3000:]}\n"
+        f"--- stderr ---\n{res.stderr[-2000:]}"
+    )
 
 # ---------------------------------------------------------------- bài 8
 def test_08_rmsnorm_chuan_hoa_dung():
@@ -346,20 +377,59 @@ def test_10_duong_residual_pre_norm_thong_suot_va_co_chuan_hoa_cuoi():
     model = TransformerNMT(cfg)
     model.eval()
     
+    # --- Phần 1: đường residual của ENCODER phải thông suốt -----------------
     for layer in model.encoder_layers:
         layer.self_attn.w_o.weight.data.zero_()
         layer.ffn.w_down.weight.data.zero_()
-    
+
     x = torch.randint(1, cfg.du_lieu.vocab_size, (1, 5))
     encoded = model.encode(x, None)
-    
+
     embed = model._embed(x)
-    assert not torch.allclose(encoded, embed, atol=1e-5) 
-    
+    assert not torch.allclose(encoded, embed, atol=1e-5)
+
     assert not isinstance(model.encoder_final_norm, nn.Identity)
-    
+
     expected = model.encoder_final_norm(embed)
-    assert torch.allclose(encoded, expected, atol=1e-5)
+    assert torch.allclose(encoded, expected, atol=1e-5), (
+        "Tắt hết nhánh ra của khối con mà đầu ra encoder vẫn khác đầu vào đi qua "
+        "chuẩn hóa cuối — đường residual không sạch, nhiều khả năng cài nhầm Post-Norm."
+    )
+
+    # --- Phần 2: đường residual của DECODER, và chuẩn hóa cuối trước lớp xuất -
+    #
+    # Phần này mới là phần spec nhắm tới: "kiểm rằng CÓ một lớp chuẩn hóa nằm
+    # giữa lớp decoder cuối cùng và lớp Linear xuất ra từ vựng". Chỉ kiểm phía
+    # encoder thì bỏ lọt đúng cái lỗi phổ biến nhất — quên RMSNorm cuối của
+    # decoder — vì nhánh đó mới là nhánh đi thẳng vào output_projection.
+    for layer in model.decoder_layers:
+        layer.self_attn.w_o.weight.data.zero_()
+        layer.cross_attn.w_o.weight.data.zero_()
+        layer.ffn.w_down.weight.data.zero_()
+
+    assert not isinstance(model.decoder_final_norm, nn.Identity), (
+        "decoder_final_norm là nn.Identity — với Pre-Norm thì giá trị trên đường "
+        "residual phình dần qua từng lớp và không có gì kéo lại trước lớp xuất. "
+        "Lỗi này KHÔNG làm chương trình báo lỗi, chỉ khiến mô hình mất ổn định."
+    )
+
+    tgt = torch.randint(1, cfg.du_lieu.vocab_size, (1, 4))
+    bo_nho = model.encode(x, None)
+    decoded = model.decode(tgt, bo_nho, None, None)
+
+    embed_tgt = model._embed(tgt)
+    expected_tgt = model.decoder_final_norm(embed_tgt)
+    assert torch.allclose(decoded, expected_tgt, atol=1e-5), (
+        "Đường residual của decoder không thông suốt: tắt hết nhánh ra của cả ba "
+        "khối con mà đầu ra vẫn khác đầu vào đi qua chuẩn hóa cuối."
+    )
+
+    # --- Phần 3: chuẩn hóa cuối phải nằm TRƯỚC lớp xuất, không phải sau -------
+    #
+    # Kiểm bằng đường đi thật: logits phải bằng output_projection áp lên kết quả
+    # đã chuẩn hóa. Nếu ai đó lỡ đảo thứ tự thì hai vế lệch nhau.
+    logits = model(x, tgt, None, None)
+    assert torch.allclose(logits, model.output_projection(expected_tgt), atol=1e-5)
 
 # ---------------------------------------------------------------- bài 11
 def test_11_rope_khong_bi_ap_vao_cross_attention():
@@ -425,12 +495,29 @@ def test_12_mo_hinh_chay_dung_o_fp16():
     src = torch.randint(1, cfg.du_lieu.vocab_size, (2, 5)).cuda()
     tgt = torch.randint(1, cfg.du_lieu.vocab_size, (2, 5)).cuda()
     
-    out32 = model(src, tgt)
-    
-    with torch.autocast("cuda", dtype=torch.float16):
-        out16 = model(src, tgt)
-        
-    assert not torch.isnan(out16).any()
+    model.eval()
+    with torch.no_grad():
+        out32 = model(src, tgt)
+        with torch.autocast("cuda", dtype=torch.float16):
+            out16 = model(src, tgt)
+
+    assert not torch.isnan(out16).any(), (
+        "fp16 ra NaN. Ba nghi phạm: che mask bằng -1e9 thay vì torch.finfo().min, "
+        "trung bình bình phương của RMSNorm tính thẳng ở fp16, hoặc bảng góc quay "
+        "RoPE tính ở fp16."
+    )
     assert not torch.isinf(out16).any()
-    
-    assert torch.allclose(out32, out16.float(), rtol=1e-2, atol=1e-2)
+
+    # Spec ghi "sai lệch TƯƠNG ĐỐI TRUNG BÌNH dưới 1e-2", không phải allclose.
+    # allclose kiểm TỪNG phần tử nên chặt hơn hẳn: chỉ cần một logit lệch là đỏ
+    # cả bài, mà trên vocab 32.000 ở fp16 thì chuyện đó xảy ra ngẫu nhiên — bài
+    # test sẽ lúc xanh lúc đỏ và cả nhóm mất buổi tối đi tìm lỗi không tồn tại.
+    goc = out32.float()
+    fp16 = out16.float()
+    mau = goc.abs().clamp(min=1e-6)          # chặn chia cho 0 ở logit gần 0
+    sai_lech_tuong_doi = ((fp16 - goc).abs() / mau).mean().item()
+
+    assert sai_lech_tuong_doi < 1e-2, (
+        f"Sai lệch tương đối trung bình fp16 vs fp32 = {sai_lech_tuong_doi:.4f}, "
+        "yêu cầu dưới 1e-2."
+    )

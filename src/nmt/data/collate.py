@@ -250,7 +250,10 @@ def tao_dataloader(
         num_workers=so_worker,
         collate_fn=partial(ghep_batch, pad_id=pad_id),
         worker_init_fn=seed_cho_worker,
-        pin_memory=True,
+        # Chỉ ghim bộ nhớ khi thật sự có GPU để chép sang. Bật vô điều kiện thì
+        # máy chạy CPU in cảnh báo ở mỗi lần tạo DataLoader, và nhiễu như vậy
+        # lâu dần khiến cả nhóm bỏ qua luôn những cảnh báo có thật.
+        pin_memory=torch.cuda.is_available(),
         persistent_workers=(so_worker > 0),
     )
 
