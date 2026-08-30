@@ -32,7 +32,20 @@ class Config(dict):
             raise AttributeError(
                 f"Cấu hình không có khóa '{ten}'. Các khóa hiện có: {sorted(self.keys())}"
             ) from None
-        return Config(gia_tri) if isinstance(gia_tri, dict) else gia_tri
+
+        # Bọc dict con thành Config rồi GHI NGƯỢC LẠI, để những lần truy cập sau
+        # trả về ĐÚNG object đó chứ không phải một bản sao mới.
+        #
+        # Bản cũ trả thẳng `Config(gia_tri)`, tức mỗi lần gọi lại tạo một bản sao,
+        # nên `cfg.mo_hinh.dropout = 0.0` ghi vào bản sao rồi vứt đi — cấu hình gốc
+        # không đổi mà KHÔNG có lỗi nào. scripts/overfit_sanity.py dính đúng bẫy
+        # này: tưởng đã tắt dropout cho cổng chặn overfit nhưng thực tế vẫn chạy
+        # dropout 0.3, khiến loss không thể xuống dưới 0,05 và cổng chặn báo TRƯỢT
+        # cho một kiến trúc vốn đúng.
+        if isinstance(gia_tri, dict) and not isinstance(gia_tri, Config):
+            gia_tri = Config(gia_tri)
+            self[ten] = gia_tri
+        return gia_tri
 
     def __setattr__(self, ten: str, gia_tri: Any) -> None:
         self[ten] = gia_tri
@@ -153,6 +166,20 @@ def _kiem_tra_rang_buoc(cfg: Config) -> None:
         )
 
 
+def ve_dict_thuan(nut: Any) -> Any:
+    """Đổi Config lồng nhau về dict thuần, đệ quy xuống cả list.
+
+    `yaml.safe_dump` chỉ biết biểu diễn đúng kiểu `dict`, gặp lớp con của dict là
+    ném RepresenterError. Mà `Config.__getattr__` có bọc dict con thành Config,
+    nên cấu hình đã bị đọc qua sẽ chứa Config ở bên trong.
+    """
+    if isinstance(nut, dict):
+        return {khoa: ve_dict_thuan(gia_tri) for khoa, gia_tri in nut.items()}
+    if isinstance(nut, (list, tuple)):
+        return [ve_dict_thuan(phan_tu) for phan_tu in nut]
+    return nut
+
+
 def luu_config(cfg: Config, duong_dan: str | Path) -> None:
     """Ghi lại cấu hình ĐÃ GỘP cạnh checkpoint và log.
 
@@ -162,4 +189,4 @@ def luu_config(cfg: Config, duong_dan: str | Path) -> None:
     duong_dan = Path(duong_dan)
     duong_dan.parent.mkdir(parents=True, exist_ok=True)
     with duong_dan.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(dict(cfg), f, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(ve_dict_thuan(cfg), f, allow_unicode=True, sort_keys=False)

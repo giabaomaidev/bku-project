@@ -62,8 +62,16 @@ def main() -> None:
     from nmt.eval.metrics import cham_bleu
     import os
 
+    # TẮT dropout và label smoothing. Cổng chặn này cần mô hình học THUỘC LÒNG
+    # đúng 50 câu, mà dropout còn bật thì loss không bao giờ xuống dưới 0,05 và
+    # cổng chặn sẽ báo TRƯỢT cho một kiến trúc vốn đúng.
+    #
+    # Trước đây hai dòng này ghi vào một bản sao rồi vứt đi nên KHÔNG có tác dụng
+    # gì — xem chú thích trong Config.__getattr__. Và khóa đúng của label
+    # smoothing là toi_uu.label_smoothing, không phải huan_luyen.nhan_tron.
     cfg.mo_hinh.dropout = 0.0
-    cfg.huan_luyen.nhan_tron = 0.0
+    cfg.toi_uu.label_smoothing = 0.0
+    assert cfg.mo_hinh.dropout == 0.0, "Tắt dropout thất bại — xem Config.__getattr__"
 
     tokenizer = nap_tokenizer(cfg.du_lieu.tokenizer)
     dataset = DuLieuSongNgu(cfg.du_lieu.train + ".en", cfg.du_lieu.train + ".vi", tokenizer)
