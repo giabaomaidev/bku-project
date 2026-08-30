@@ -1,15 +1,42 @@
-# Thi Nghiem Phuc Hoi
+# Thí nghiệm giết phiên và phục hồi — TASK 14
 
-> **Phụ trách: TASK 14 — Quân**
->
-> File này còn trống. Điền vào trong lúc làm task, đừng để tới tuần 4 mới viết.
+> File này do `scripts/thi_nghiem_phuc_hoi.py` TỰ SINH từ số đo thật.
 
-## Nội dung cần có
+## Cách làm
 
-- Biểu đồ HAI ĐƯỜNG LOSS CHỒNG LÊN NHAU:
--   đường 1 = chạy liên tục, đường 2 = bị giết hai lần rồi chạy tiếp
--   đánh dấu bằng đường kẻ dọc ở hai vị trí bị giết
--   yêu cầu: chênh lệch loss tại cùng một bước dưới 1%
--   -> HÌNH CÓ GIÁ TRỊ NHẤT CỦA CẢ ĐỒ ÁN, dùng cho báo cáo + slide + CV
-- Ảnh chụp màn hình repo Hugging Face cho thấy các file đã đẩy lên đúng
-- Tỉ lệ % thời gian tốn cho việc lưu và đẩy checkpoint (yêu cầu < 5%)
+- **Lượt A**: chạy liền một mạch 9 bước.
+- **Lượt B**: cùng seed, nhưng bị giết ở bước 3 và 6. Mỗi lần bị giết thì mọi đối tượng
+  trong bộ nhớ bị vứt bỏ, dựng lại từ số 0 rồi nạp checkpoint chạy tiếp — đúng
+  như khi Kaggle ngắt phiên thật.
+- Seed: 42 · dữ liệu: batch giả
+
+## Kết quả
+
+| chỉ số | giá trị |
+|---|---|
+| số bước so sánh | 9 |
+| chênh lệch trung bình | 0.0000% |
+| **chênh lệch lớn nhất** | **0.0000%** |
+| ngưỡng yêu cầu | 1.0% |
+| **kết luận** | **ĐẠT** |
+
+![Hai đường loss chồng lên nhau](../results/thi_nghiem_phuc_hoi.png)
+
+Hai đường trùng khít nghĩa là checkpoint đã giữ đủ **cả bảy món**: trọng số,
+trạng thái optimizer, scheduler, GradScaler, số bước/epoch, cấu hình và trạng
+thái RNG. Thiếu bất kỳ món nào thì hai đường sẽ tách dần ra:
+
+- thiếu trạng thái optimizer → momentum AdamW về 0, loss giật lên ngay chỗ nối
+- thiếu trạng thái scheduler → learning rate nhảy về đầu
+- thiếu trạng thái RNG → dropout và thứ tự batch khác đi, hai đường lệch dần
+
+## Còn thiếu để nộp
+
+- [ ] Ảnh chụp màn hình repo Hugging Face cho thấy các file đã đẩy lên đúng chỗ
+- [ ] Tỉ lệ % thời gian tốn cho việc lưu và đẩy checkpoint — lấy ở
+      `docs/bao_cao_huan_luyen.md`, mục Tiêu chí XONG KHI (yêu cầu dưới 5%)
+
+## File số liệu gốc
+
+- `results/thi_nghiem_phuc_hoi.csv`
+- `results/thi_nghiem_phuc_hoi.png`
