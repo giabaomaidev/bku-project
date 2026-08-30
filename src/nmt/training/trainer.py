@@ -24,18 +24,416 @@ Thứ tự đúng trong một chu kỳ cộng dồn:
     scaler.update()
     optimizer.zero_grad(set_to_none=True)
     scheduler.step()
+
+TUYỆT ĐỐI KHÔNG GỌI model.half(). Dùng torch.autocast. Gọi .half() sẽ ép bảng
+góc quay cos_cache/inv_freq của RoPE xuống fp16 và làm hỏng đúng cái bẫy fp16
+số 2 mà TASK 06 đã cẩn thận tránh.
+
+TÁI LẬP CHO TASK 14 — vì sao có `_luong_batch`:
+    Muốn hai đường loss của thí nghiệm giết phiên trùng khít thì sau khi resume,
+    mô hình phải gặp ĐÚNG thứ tự batch như lượt chạy liền mạch. Nên thứ tự batch
+    của mỗi epoch được ghim theo (seed, epoch), và khi resume giữa chừng epoch
+    thì tua nhanh qua đúng số batch đã tiêu thụ. Thiếu phần này thì hai đường
+    tách nhau dần mà không có lỗi nào báo ra.
 """
 
 from __future__ import annotations
 
+import math
+import time
+from pathlib import Path
+
+import torch
+
+from nmt.training.checkpoint import CHE_DO_SMOKE, CHE_DO_THAT, luu_checkpoint, nap_checkpoint
+from nmt.training.loss import tao_loss
+from nmt.training.scheduler import tao_scheduler
+
+TEN_FILE_MOI_NHAT = "moi_nhat.pt"
+TEN_FILE_TOT_NHAT = "tot_nhat.pt"
+
+
+def chon_thiet_bi() -> torch.device:
+    """CUDA nếu có, rồi tới MPS của máy Mac, cuối cùng là CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _co_the_dung_fp16(cfg, thiet_bi: torch.device) -> bool:
+    """fp16 chỉ bật khi cấu hình yêu cầu VÀ đang thật sự chạy trên CUDA.
+
+    GradScaler chỉ có tác dụng trên CUDA. Bật ở CPU thì PyTorch vừa in cảnh báo
+    vừa chạy chậm hơn, mà bài test ở máy cá nhân lại toàn chạy CPU.
+    """
+    if thiet_bi.type != "cuda":
+        return False
+    if not cfg.toi_uu.get("do_chinh_xac_hon_hop", False):
+        return False
+    # Ràng buộc chặn bf16 đã nằm ở nap_config, đây chỉ khẳng định lại.
+    return cfg.toi_uu.get("kieu_do_chinh_xac", "fp16") == "fp16"
+
 
 class Trainer:
-    def __init__(self, cfg, model, train_loader, dev_loader, logger) -> None:
-        raise NotImplementedError("TASK 13 — Quân")
+    """Vòng huấn luyện đầy đủ: cộng dồn gradient, fp16, checkpoint, đồng bộ Hub.
 
-    def train(self) -> None:
-        raise NotImplementedError("TASK 13 — Quân")
+    Args:
+        cfg: cấu hình đã gộp.
+        model: TransformerNMT, hoặc bất kỳ nn.Module nào cùng chữ ký forward.
+        train_loader, dev_loader: DataLoader sinh từ nmt.data.tao_dataloader.
+        logger: BoGhiLog, hoặc None nếu không cần ghi log.
+        che_do: CHE_DO_THAT hoặc CHE_DO_SMOKE. Smoke test KHÔNG đẩy gì lên Hub.
+        thu_muc_checkpoint: nơi ghi checkpoint. Mặc định lấy từ cấu hình.
+        repo_hub: repo Hugging Face để đồng bộ. None thì bỏ qua phần đồng bộ.
+        so_buoc_toi_da: ghi đè huan_luyen.so_buoc_toi_da — dùng cho smoke test
+            và cho thí nghiệm giết phiên của TASK 14.
+    """
 
+    def __init__(
+        self,
+        cfg,
+        model,
+        train_loader,
+        dev_loader,
+        logger=None,
+        *,
+        che_do: str = CHE_DO_THAT,
+        thu_muc_checkpoint: str | Path | None = None,
+        repo_hub: str | None = None,
+        so_buoc_toi_da: int | None = None,
+    ) -> None:
+        self.cfg = cfg
+        self.che_do = che_do
+        self.logger = logger
+        self.train_loader = train_loader
+        self.dev_loader = dev_loader
+
+        self.thiet_bi = chon_thiet_bi()
+        self.model = model.to(self.thiet_bi)
+
+        # --- Optimizer -------------------------------------------------------
+        if cfg.toi_uu.optimizer != "adamw":
+            raise ValueError(
+                f"toi_uu.optimizer = {cfg.toi_uu.optimizer!r} chưa được cài. "
+                "Hiện chỉ hỗ trợ adamw."
+            )
+        self.optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=cfg.toi_uu.learning_rate,
+            betas=tuple(cfg.toi_uu.betas),
+            eps=cfg.toi_uu.eps,
+            weight_decay=cfg.toi_uu.weight_decay,
+        )
+
+        self.scheduler = tao_scheduler(cfg, self.optimizer)
+        self.criterion = tao_loss(cfg, vocab_size=cfg.du_lieu.vocab_size, pad_id=model.pad_id)
+
+        # --- fp16 ------------------------------------------------------------
+        self.dung_fp16 = _co_the_dung_fp16(cfg, self.thiet_bi)
+        self.scaler = torch.amp.GradScaler(
+            "cuda",
+            init_scale=cfg.toi_uu.get("grad_scaler_init", 65536.0),
+            enabled=self.dung_fp16,
+        )
+
+        # --- Các mốc ---------------------------------------------------------
+        self.so_buoc_cong_don = max(1, int(cfg.toi_uu.get("so_buoc_cong_don_gradient", 1)))
+        self.nguong_cat_gradient = cfg.toi_uu.get("cat_gradient_norm", 1.0)
+        self.so_buoc_toi_da = so_buoc_toi_da or cfg.huan_luyen.so_buoc_toi_da
+        self.danh_gia_moi = cfg.huan_luyen.danh_gia_moi
+        self.luu_checkpoint_moi = cfg.huan_luyen.luu_checkpoint_moi
+        self.dung_som_sau = cfg.huan_luyen.dung_som_sau
+
+        self.thu_muc_checkpoint = Path(
+            thu_muc_checkpoint or cfg.thi_nghiem.thu_muc_checkpoint
+        )
+        self.thu_muc_checkpoint.mkdir(parents=True, exist_ok=True)
+        self.repo_hub = repo_hub
+
+        # --- Trạng thái chạy -------------------------------------------------
+        self.buoc = 0
+        self.epoch = 0
+        self.buoc_trong_epoch = 0
+        self.loss_dev_tot_nhat = math.inf
+        self.so_lan_khong_cai_thien = 0
+        self.lich_su_loss: list[float] = []
+
+    # ------------------------------------------------------------------ dữ liệu
+
+    def _ghim_thu_tu_batch(self) -> None:
+        """Ghim thứ tự batch của epoch hiện tại theo (seed, epoch).
+
+        Nhờ vậy lượt chạy liền mạch và lượt bị giết rồi resume gặp ĐÚNG cùng một
+        dãy batch — điều kiện để hai đường loss của TASK 14 trùng khít.
+        """
+        sampler = getattr(self.train_loader, "batch_sampler", None)
+        generator = getattr(sampler, "_generator", None)
+        if generator is not None:
+            generator.manual_seed(self.cfg.thi_nghiem.seed * 100_003 + self.epoch)
+
+    def _luong_batch(self):
+        """Sinh batch liên tục qua nhiều epoch, tự tua nhanh khi resume."""
+        while True:
+            self._ghim_thu_tu_batch()
+            can_bo_qua = self.buoc_trong_epoch
+
+            for chi_so, batch in enumerate(self.train_loader):
+                # Tua nhanh phần đã tiêu thụ trước khi bị giết phiên.
+                if chi_so < can_bo_qua:
+                    continue
+                self.buoc_trong_epoch = chi_so + 1
+                yield batch
+
+            self.epoch += 1
+            self.buoc_trong_epoch = 0
+
+    def _chuyen_len_thiet_bi(self, batch: dict) -> dict:
+        return {
+            ten: gia_tri.to(self.thiet_bi, non_blocking=True)
+            for ten, gia_tri in batch.items()
+        }
+
+    # ------------------------------------------------------------------ một bước
+
+    def _tinh_loss(self, batch: dict) -> torch.Tensor:
+        logits = self.model(
+            batch["src_ids"], batch["tgt_input"], batch["src_mask"], batch["tgt_mask"]
+        )
+        return self.criterion(logits, batch["labels"])
+
+    def _mot_buoc_cap_nhat(self, luong) -> tuple[float, int]:
+        """Chạy trọn một chu kỳ cộng dồn rồi cập nhật trọng số đúng MỘT lần.
+
+        Returns:
+            (loss trung bình của chu kỳ, số token thật đã xử lý)
+        """
+        self.optimizer.zero_grad(set_to_none=True)
+        tong_loss = 0.0
+        tong_token = 0
+
+        for _ in range(self.so_buoc_cong_don):
+            batch = self._chuyen_len_thiet_bi(next(luong))
+
+            with torch.autocast(
+                device_type=self.thiet_bi.type,
+                dtype=torch.float16,
+                enabled=self.dung_fp16,
+            ):
+                # Chia cho số bước cộng dồn NGAY TẠI ĐÂY. Cộng dồn gradient của n
+                # lượt mà không chia thì độ lớn gradient gấp n lần, ngưỡng cắt 1.0
+                # sẽ cắt gần hết, và mô hình học rất chậm mà không rõ vì sao.
+                loss = self._tinh_loss(batch) / self.so_buoc_cong_don
+
+            # Chặn NaN NGAY tại nguồn. Để nó chảy vào backward thì toàn bộ trọng
+            # số thành NaN và mọi bước sau đều vô nghĩa, trong khi loss in ra vẫn
+            # là một con số trông bình thường.
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    f"Loss ra {loss.item()} tại bước {self.buoc}. "
+                    "Kiểm ba chỗ: learning rate quá lớn; mặt nạ che nhầm khiến cả "
+                    "một hàng bị che (softmax của toàn -inf ra NaN); hoặc dữ liệu "
+                    "có câu rỗng."
+                )
+
+            self.scaler.scale(loss).backward()
+
+            tong_loss += loss.item() * self.so_buoc_cong_don
+            tong_token += int((batch["labels"] != self.model.pad_id).sum())
+
+        # CHI TIẾT DỄ SAI SỐ 1: phải gỡ hệ số giãn TRƯỚC khi cắt theo norm.
+        # Quên dòng này thì đang cắt gradient đã nhân 65536, ngưỡng 1.0 vô nghĩa,
+        # và chương trình không báo gì cả.
+        if self.dung_fp16:
+            self.scaler.unscale_(self.optimizer)
+
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.nguong_cat_gradient)
+
+        # CHI TIẾT DỄ SAI SỐ 2: step và update chỉ gọi MỘT lần ở cuối chu kỳ.
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        self.scheduler.step()
+
+        return tong_loss / self.so_buoc_cong_don, tong_token
+
+    # ------------------------------------------------------------------ đánh giá
+
+    @torch.no_grad()
     def danh_gia(self) -> dict:
         """Loss trên tập dev. Trả về dict để ghi log."""
-        raise NotImplementedError("TASK 13 — Quân")
+        if self.dev_loader is None:
+            return {}
+
+        self.model.eval()
+        tong_loss = 0.0
+        so_batch = 0
+
+        for batch in self.dev_loader:
+            batch = self._chuyen_len_thiet_bi(batch)
+            with torch.autocast(
+                device_type=self.thiet_bi.type,
+                dtype=torch.float16,
+                enabled=self.dung_fp16,
+            ):
+                loss = self._tinh_loss(batch)
+            tong_loss += loss.item()
+            so_batch += 1
+
+        self.model.train()
+        if so_batch == 0:
+            return {}
+
+        loss_dev = tong_loss / so_batch
+        return {
+            "loss_dev": loss_dev,
+            # Perplexity dễ đọc hơn loss khi so giữa các lần chạy, và là con số
+            # mà báo cáo dịch máy nào cũng có.
+            "perplexity_dev": math.exp(min(loss_dev, 20.0)),
+        }
+
+    # ------------------------------------------------------------------ checkpoint
+
+    def _luu(self, ten_file: str, loss_dev: float | None) -> Path:
+        return luu_checkpoint(
+            self.thu_muc_checkpoint / ten_file,
+            self.model,
+            self.optimizer,
+            self.scheduler,
+            self.scaler,
+            buoc=self.buoc,
+            epoch=self.epoch,
+            cfg=self.cfg,
+            loss_dev=loss_dev,
+            che_do=self.che_do,
+            so_lieu_them={"buoc_trong_epoch": self.buoc_trong_epoch},
+        )
+
+    def _dong_bo_hub(self, duong_dan: Path, ten_tren_hub: str) -> None:
+        """Đẩy checkpoint và log lên Hub. Smoke test tự động bỏ qua."""
+        if not self.repo_hub or self.che_do == CHE_DO_SMOKE:
+            return
+
+        from nmt.training.hub_sync import TIEN_TO_LOG, day_len_hub, day_thu_muc_len_hub
+
+        day_len_hub(duong_dan, self.repo_hub, ten_tren_hub, che_do=self.che_do)
+
+        # Đẩy CẢ log, nếu không thì kernel Kaggle chết là mất log và TASK 14
+        # không vẽ được đường loss liền mạch qua các lần bị giết.
+        if self.logger is not None:
+            day_thu_muc_len_hub(
+                self.logger.thu_muc, self.repo_hub, TIEN_TO_LOG, che_do=self.che_do
+            )
+
+    def tiep_tuc_tu(self, duong_dan: str | Path) -> dict:
+        """Nạp checkpoint rồi chạy tiếp đúng chỗ cũ."""
+        thong_tin = nap_checkpoint(
+            duong_dan,
+            self.model,
+            self.optimizer,
+            self.scheduler,
+            self.scaler,
+            map_location=self.thiet_bi,
+            # Lượt chạy thật KHÔNG được vô tình nạp checkpoint của smoke test.
+            # Đây là bài học mục 1.8 trong `Sưu tập lỗi.md`.
+            che_do_mong_doi=self.che_do,
+        )
+        self.buoc = thong_tin["buoc"]
+        self.epoch = thong_tin["epoch"]
+
+        goi = torch.load(Path(duong_dan), map_location="cpu", weights_only=False)
+        self.buoc_trong_epoch = goi.get("buoc_trong_epoch", 0)
+
+        if thong_tin["loss_dev"] is not None:
+            self.loss_dev_tot_nhat = thong_tin["loss_dev"]
+
+        print(f"[trainer] Chạy tiếp từ bước {self.buoc} (epoch {self.epoch}, "
+              f"batch {self.buoc_trong_epoch} trong epoch).")
+        return thong_tin
+
+    # ------------------------------------------------------------------ vòng chính
+
+    def train(self) -> dict:
+        """Chạy tới so_buoc_toi_da hoặc tới khi dừng sớm. Trả về tóm tắt lượt chạy."""
+        self.model.train()
+        luong = self._luong_batch()
+
+        moc_thoi_gian = time.perf_counter()
+        token_tu_lan_ghi_truoc = 0
+        buoc_bat_dau = self.buoc
+        dung_som = False
+
+        print(f"[trainer] Thiết bị {self.thiet_bi} · fp16 {'BẬT' if self.dung_fp16 else 'TẮT'} · "
+              f"cộng dồn {self.so_buoc_cong_don} · chế độ {self.che_do}")
+
+        while self.buoc < self.so_buoc_toi_da:
+            loss_train, so_token = self._mot_buoc_cap_nhat(luong)
+            self.buoc += 1
+            self.lich_su_loss.append(loss_train)
+            token_tu_lan_ghi_truoc += so_token
+
+            # --- ghi log -----------------------------------------------------
+            if self.logger is not None and self.buoc % 50 == 0:
+                giay_troi = time.perf_counter() - moc_thoi_gian
+                self.logger.ghi(
+                    buoc=self.buoc,
+                    loss_train=loss_train,
+                    learning_rate=self.scheduler.learning_rate_hien_tai(),
+                    giay_moi_buoc=giay_troi / 50,
+                    token_moi_giay=token_tu_lan_ghi_truoc / max(giay_troi, 1e-9),
+                )
+                moc_thoi_gian = time.perf_counter()
+                token_tu_lan_ghi_truoc = 0
+
+            if self.buoc % max(1, self.danh_gia_moi // 10) == 0:
+                print(f"  bước {self.buoc:>6} · loss {loss_train:.4f} · "
+                      f"lr {self.scheduler.learning_rate_hien_tai():.2e}")
+
+            # --- đánh giá + dừng sớm ------------------------------------------
+            if self.buoc % self.danh_gia_moi == 0:
+                so_lieu = self.danh_gia()
+                if so_lieu:
+                    loss_dev = so_lieu["loss_dev"]
+                    print(f"  [đánh giá] bước {self.buoc} · loss_dev {loss_dev:.4f} · "
+                          f"ppl {so_lieu['perplexity_dev']:.2f}")
+                    if self.logger is not None:
+                        self.logger.ghi(buoc=self.buoc, **so_lieu)
+
+                    if loss_dev < self.loss_dev_tot_nhat:
+                        self.loss_dev_tot_nhat = loss_dev
+                        self.so_lan_khong_cai_thien = 0
+                        duong_dan = self._luu(TEN_FILE_TOT_NHAT, loss_dev)
+                        self._dong_bo_hub(duong_dan, "checkpoints/tot_nhat.pt")
+                    else:
+                        self.so_lan_khong_cai_thien += 1
+                        if self.so_lan_khong_cai_thien >= self.dung_som_sau:
+                            print(f"[trainer] Dừng sớm: {self.dung_som_sau} lần đánh giá "
+                                  "liên tiếp không cải thiện.")
+                            dung_som = True
+
+            # --- lưu checkpoint định kỳ ---------------------------------------
+            if self.buoc % self.luu_checkpoint_moi == 0 or dung_som:
+                duong_dan = self._luu(TEN_FILE_MOI_NHAT, None)
+                self._dong_bo_hub(duong_dan, "checkpoints/moi_nhat.pt")
+
+            if dung_som:
+                break
+
+        # Luôn lưu một bản cuối, kể cả khi chạy hết số bước mà không rơi đúng vào
+        # mốc luu_checkpoint_moi — thiếu bản này là mất trắng phần chạy sau mốc cuối.
+        duong_dan_cuoi = self._luu(TEN_FILE_MOI_NHAT, None)
+        self._dong_bo_hub(duong_dan_cuoi, "checkpoints/moi_nhat.pt")
+        if self.logger is not None:
+            self.logger.dong()
+
+        return {
+            "buoc_cuoi": self.buoc,
+            "so_buoc_da_chay": self.buoc - buoc_bat_dau,
+            "epoch": self.epoch,
+            "loss_train_cuoi": self.lich_su_loss[-1] if self.lich_su_loss else None,
+            "loss_dev_tot_nhat": (
+                self.loss_dev_tot_nhat if math.isfinite(self.loss_dev_tot_nhat) else None
+            ),
+            "dung_som": dung_som,
+            "checkpoint_moi_nhat": str(duong_dan_cuoi),
+        }
