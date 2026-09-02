@@ -78,6 +78,37 @@ def _nap_hoac_gia_lap_du_lieu(cfg, so_cau: int):
     return None, False
 
 
+def _kiem_tra_vocab(dataset, vocab_size: int) -> None:
+    """Chặn sớm khi token ID vượt quá số hàng của ma trận embedding.
+
+    Không có chốt này thì lỗi rơi xuống tận nhân CUDA và biểu hiện là:
+
+        IndexKernelUtils.cu:16: vectorized_gather_kernel:
+        Assertion `ind >= 0 && ind < ind_dim_size` failed
+        Aborted (core dumped)          -> mã thoát 134
+
+    Tra ngược từ dòng đó về nguyên nhân rất mất thời gian, mà tệ hơn là CUDA
+    context hỏng luôn nên phải khởi động lại kernel. Kiểm ở đây tốn vài mili giây
+    và cho ra một câu tiếng Việt chỉ thẳng chỗ sai.
+    """
+    if dataset is None:
+        return
+
+    id_lon_nhat = max(
+        max((max(cau) for cau in dataset._src if cau), default=0),
+        max((max(cau) for cau in dataset._tgt if cau), default=0),
+    )
+    if id_lon_nhat >= vocab_size:
+        raise ValueError(
+            f"Token ID lớn nhất trong dữ liệu là {id_lon_nhat}, nhưng "
+            f"du_lieu.vocab_size chỉ có {vocab_size}.\n"
+            "Ma trận embedding không đủ hàng, và nếu để chạy tiếp thì CUDA sẽ "
+            "abort với mã 134 chứ không báo gì dễ hiểu.\n"
+            "Nguyên nhân thường gặp: thu nhỏ vocab_size cho chạy nhanh trong khi "
+            "vẫn nạp dữ liệu thật. vocab_size PHẢI luôn khớp với tokenizer."
+        )
+
+
 class _LoaderCoDinh:
     """Danh sách batch cố định. Thứ tự luôn như nhau nên hai lượt so được với nhau."""
 
@@ -299,12 +330,23 @@ def main() -> None:
     cfg.huan_luyen.dung_som_sau = 10_000
 
     if args.nhanh:
+        # Thu nhỏ MÔ HÌNH cho nhanh. Nhưng TUYỆT ĐỐI KHÔNG đụng vào
+        # du_lieu.vocab_size — nó phải luôn khớp với tokenizer.
+        #
+        # Bản đầu có thu nhỏ vocab_size xuống 200, và nó nổ trên Kaggle: hàm nạp
+        # dữ liệu ưu tiên dùng dữ liệu THẬT khi có, nên token ID lên tới 32.000
+        # trong khi ma trận embedding chỉ còn 200 hàng. Kết quả là CUDA assert
+        # "index out of bounds" rồi abort với mã thoát 134.
+        #
+        # Máy cá nhân không bắt được lỗi này vì ở đó không có dữ liệu, script rơi
+        # vào nhánh batch giả và batch giả sinh ID theo đúng vocab_size đã thu nhỏ.
+        # Hai môi trường chạy hai nhánh khác nhau — bài học: thu nhỏ cấu hình thì
+        # chỉ được đụng vào những khóa KHÔNG ràng buộc với dữ liệu bên ngoài.
         cfg.mo_hinh.d_model = 64
         cfg.mo_hinh.so_head = 4
         cfg.mo_hinh.so_lop_encoder = 1
         cfg.mo_hinh.so_lop_decoder = 1
         cfg.mo_hinh.d_ff = 64
-        cfg.du_lieu.vocab_size = 200
 
     print("=" * 70)
     print(f"TASK 14 — GIẾT PHIÊN & PHỤC HỒI · {so_buoc} bước · giết tại {cac_moc_giet}")
@@ -313,6 +355,7 @@ def main() -> None:
     dataset, co_du_lieu_that = _nap_hoac_gia_lap_du_lieu(
         cfg, 100 if args.nhanh else SO_CAU_DE_CHAY
     )
+    _kiem_tra_vocab(dataset, cfg.du_lieu.vocab_size)
     thu_muc = GOC / "artifacts" / "checkpoints" / "thi_nghiem_phuc_hoi"
 
     loss_a = _chay_lien_tuc(cfg, dataset, thu_muc, so_buoc)
