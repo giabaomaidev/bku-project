@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -191,10 +192,16 @@ def viet_bao_cao(duong_dan: Path, cfg, model, ket_qua: dict, giay_chay: float,
     ghi(f"- **TASK 12** — thời gian đồng bộ checkpoint dưới 5% tổng thời gian: "
         f"**{ty_le_dong_bo:.2f}%** → **{'ĐẠT' if ty_le_dong_bo < 5 else 'CHƯA ĐẠT'}**\n")
 
+    # Tên lượt chạy nằm ở thư mục cuối của đường dẫn log, dùng lại để dẫn đúng
+    # các file riêng của lượt này thay vì ghi tên chung.
+    ten_chay = duong_dan_log.name
     ghi("## File sinh ra\n")
     ghi(f"- `{ket_qua['checkpoint_moi_nhat']}`")
     ghi(f"- `{duong_dan_log / 'metrics.csv'}` — dùng để vẽ đường loss cho báo cáo")
-    ghi("- `results/cau_hinh_da_gop.yaml` — cấu hình đầy đủ của lượt chạy này\n")
+    ghi(f"- `results/cau_hinh/{ten_chay}.yaml` — cấu hình đầy đủ của lượt chạy này")
+    ghi(f"- `results/bao_cao/{ten_chay}.md` — chính là file này, bản riêng không bị đè")
+    ghi(f"- Trên Hub: `checkpoints/{ten_chay}/`, `logs/{ten_chay}/`, "
+        f"`configs/{ten_chay}.yaml`\n")
 
     ghi("## Cách chạy lại y hệt\n")
     ghi("```bash")
@@ -332,7 +339,12 @@ def main() -> None:
                   "checkpoint vẫn ghi xuống đĩa, nhưng sẽ KHÔNG đồng bộ lên Hub.")
 
     # --- Huấn luyện -----------------------------------------------------------
-    luu_config(cfg, GOC / "results" / "cau_hinh_da_gop.yaml")
+    #
+    # Cấu hình đã gộp lưu THEO TỪNG LƯỢT CHẠY. Dùng chung một tên thì 12 lượt
+    # ablation của TASK 17 đè lên nhau, và ba tháng sau nhìn một con số trong báo
+    # cáo sẽ không còn cách nào biết nó chạy bằng cấu hình gì.
+    duong_dan_cau_hinh = GOC / "results" / "cau_hinh" / f"{ten_chay}.yaml"
+    luu_config(cfg, duong_dan_cau_hinh)
     bat_dau = time.perf_counter()
     ket_qua = trainer.train()
     giay_chay = time.perf_counter() - bat_dau
@@ -346,18 +358,35 @@ def main() -> None:
 
         moc = time.perf_counter()
         dam_bao_repo(repo_hub)
-        day_len_hub(GOC / "results" / "cau_hinh_da_gop.yaml", repo_hub,
-                    f"{TIEN_TO_CAU_HINH}/cau_hinh_da_gop.yaml", che_do=che_do)
+        day_len_hub(duong_dan_cau_hinh, repo_hub,
+                    f"{TIEN_TO_CAU_HINH}/{ten_chay}.yaml", che_do=che_do)
         # Tokenizer phải đi cùng checkpoint. Mỗi người tự chạy train_tokenizer.py
         # sẽ ra file khác nhau nếu lệch phiên bản thư viện, và khi đó checkpoint
         # nạp vào dữ liệu của người khác ra rác vì token ID không khớp.
         day_len_hub(Path(cfg.du_lieu.tokenizer), repo_hub, TEN_TOKENIZER, che_do=che_do)
         giay_dong_bo = time.perf_counter() - moc
 
+    # BÁO CÁO GHI HAI CHỖ, cố ý:
+    #
+    #   results/bao_cao/<ten_chay>.md   bản RIÊNG của lượt này, không ai đè được.
+    #                                   Đây là thứ TASK 17 cần: 12 lượt ablation
+    #                                   phải còn đủ 12 báo cáo mới lập được bảng.
+    #   docs/bao_cao_huan_luyen.md      bản chính thức cho đồ án, luôn là lượt
+    #                                   chạy gần nhất. Nhóm trưởng đã tạo sẵn chỗ
+    #                                   này và bảng phân công dẫn thẳng tới nó.
+    #
+    # Chỉ giữ một trong hai đều hụt: chỉ bản chung thì mất số liệu ablation, chỉ
+    # bản riêng thì file mà cả nhóm đang dẫn link tới vĩnh viễn trống.
+    duong_dan_bao_cao = GOC / "results" / "bao_cao" / f"{ten_chay}.md"
     viet_bao_cao(
-        GOC / "docs" / "bao_cao_huan_luyen.md",
+        duong_dan_bao_cao,
         cfg, model, ket_qua, giay_chay, giay_dong_bo, args.smoke, duong_dan_log,
     )
+
+    bao_cao_chinh = GOC / "docs" / "bao_cao_huan_luyen.md"
+    bao_cao_chinh.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(duong_dan_bao_cao, bao_cao_chinh)
+    print(f"[train] Đã chép sang bản chính thức: {bao_cao_chinh}")
 
     print("\n" + "=" * 70)
     print(f"XONG sau {giay_chay / 60:.1f} phút · {ket_qua['so_buoc_da_chay']:,} bước")

@@ -265,7 +265,9 @@ def viet_bao_cao(duong_dan: Path, cfg, loss_a: list[float], cac_moc_giet: list[i
     ghi("  trong bộ nhớ bị vứt bỏ, dựng lại từ số 0 rồi nạp checkpoint chạy tiếp — đúng")
     ghi("  như khi Kaggle ngắt phiên thật.")
     ghi(f"- Seed: {cfg.thi_nghiem.seed} · dữ liệu: "
-        f"{'tập con IWSLT thật' if co_du_lieu_that else 'batch giả'}\n")
+        f"{'tập con IWSLT thật' if co_du_lieu_that else 'batch giả'}")
+    ghi(f"- Cấu hình: `{cfg.thi_nghiem.get('duong_dan_config', 'configs/base.yaml')}` "
+        f"· thí nghiệm `{cfg.thi_nghiem.ten}`\n")
 
     ghi("## Kết quả\n")
     ghi("| chỉ số | giá trị |")
@@ -319,6 +321,8 @@ def main() -> None:
     cfg = nap_config(args.config)
     if args.seed is not None:
         cfg["thi_nghiem"]["seed"] = args.seed
+    # Ghi lại chính file cấu hình đã dùng, để báo cáo nói được nó đo cái gì.
+    cfg["thi_nghiem"]["duong_dan_config"] = args.config
 
     so_buoc = 9 if args.nhanh else args.so_buoc
     cac_moc_giet = [so_buoc // 3, so_buoc * 2 // 3]

@@ -284,6 +284,8 @@ def viet_bao_cao(
     ghi("> Đừng sửa tay: chạy lại script là mọi con số được cập nhật cùng lúc.\n")
 
     ghi("## Điều kiện đo\n")
+    ghi(f"- Cấu hình: `{cfg.thi_nghiem.get('duong_dan_config', 'configs/base.yaml')}` "
+        f"· thí nghiệm `{cfg.thi_nghiem.ten}`")
     ghi(f"- GPU: **{_ten_gpu()}**")
     ghi(f"- Độ chính xác: {'fp16 + GradScaler' if cfg.toi_uu.do_chinh_xac_hon_hop else 'fp32'}")
     ghi(f"- Số bước đo mỗi cấu hình: {so_buoc_do} (đã bỏ {SO_BUOC_KHOI_DONG} bước khởi động đầu)")
@@ -409,6 +411,8 @@ def main() -> None:
     cfg_goc = nap_config(args.config)
     if args.seed is not None:
         cfg_goc["thi_nghiem"]["seed"] = args.seed
+    # Ghi lại chính file cấu hình đã dùng, để báo cáo nói được nó đo cái gì.
+    cfg_goc["thi_nghiem"]["duong_dan_config"] = args.config
 
     print("\n" + "=" * 70)
     print("NGÂN SÁCH THEO SỐ TOKEN MỖI BATCH")
