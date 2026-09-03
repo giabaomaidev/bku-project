@@ -52,6 +52,16 @@ CAC_CELL = [
 | **1** | `SMOKE_TEST = True` | ~5 phút | Chứng minh Run All không crash. Đẩy lên nhánh `smoke/` trên Hub để kiểm luôn cơ chế đẩy |
 | **2** | `SMOKE_TEST = False` | ~10,5 giờ mỗi phiên | Huấn luyện thật |
 
+## Công tắc thứ hai: `TRAIN_FROM_SCRATCH`
+
+| Giá trị | Nghĩa là |
+|---|---|
+| `False` *(mặc định)* | Chạy tiếp từ checkpoint đang có, dù ở dataset hay trên Hugging Face |
+| `True` | **Dựng lại toàn bộ từ số 0**, bỏ qua mọi checkpoint. Đường tái lập cho người chấm |
+
+Bật `True` thì kết quả ghi vào nhánh riêng `<tên>_tu_dau`, **không đè lên** lượt chạy
+chính của nhóm. Chạy đủ 60.000 bước mất khoảng 5 phiên Kaggle.
+
 Lượt 1 mà đỏ ở bất kỳ đâu thì **sửa xong hãy sang lượt 2**. Đó là toàn bộ lý do
 smoke test tồn tại — bắt lỗi trước khi đốt giờ GPU.
 
@@ -104,6 +114,12 @@ print("\nCài đặt xong.")
 # ===================== CÔNG TẮC =====================
 
 SMOKE_TEST = True      # True: chạy nháp ~5 phút. False: huấn luyện thật.
+
+# Bật khi muốn DỰNG LẠI TOÀN BỘ TỪ SỐ 0, bỏ qua mọi checkpoint đang có.
+# Đây là đường tái lập dành cho người chấm. Kết quả ghi vào nhánh riêng
+# "<tên>_tu_dau" nên KHÔNG đè lên lượt chạy chính của nhóm.
+# Chạy đủ 60.000 bước mất khoảng 5 phiên Kaggle.
+TRAIN_FROM_SCRATCH = False
 
 REPO_HUB   = "mgbao/envi-nmt-scratch-transformer"    # ĐỔI THÀNH TÀI KHOẢN HF CỦA CẬU
 SEED       = 42
@@ -188,9 +204,20 @@ def gop_dataset_du_lieu():
             if not co_du_lieu or (p / "src" / "nmt").is_dir():
                 continue
             for nhanh in ("artifacts", "data", "results"):
-                if (p / nhanh).is_dir():
-                    shutil.copytree(p / nhanh, REPO / nhanh, dirs_exist_ok=True)
-                    da_gop.append(f"{p.name}/{nhanh}")
+                if not (p / nhanh).is_dir():
+                    continue
+                # TRAIN_FROM_SCRATCH: gộp dữ liệu và tokenizer (đỡ 10 phút tải,
+                # và bảo đảm đúng cùng một bản dữ liệu), nhưng KHÔNG gộp
+                # checkpoint — đúng nghĩa dựng lại trọng số từ số 0.
+                if TRAIN_FROM_SCRATCH and nhanh == "artifacts":
+                    nguon_con = p / nhanh / "tokenizer"
+                    if nguon_con.is_dir():
+                        shutil.copytree(nguon_con, REPO / "artifacts" / "tokenizer",
+                                        dirs_exist_ok=True)
+                        da_gop.append(f"{p.name}/artifacts/tokenizer")
+                    continue
+                shutil.copytree(p / nhanh, REPO / nhanh, dirs_exist_ok=True)
+                da_gop.append(f"{p.name}/{nhanh}")
     return da_gop
 
 
@@ -214,6 +241,7 @@ def chay(lenh, mo_ta=""):
 
 
 print(f"CHẾ ĐỘ    : {'SMOKE TEST (chạy nháp)' if SMOKE_TEST else 'HUẤN LUYỆN THẬT'}")
+print(f"NGUỒN     : {'DỰNG LẠI TỪ SỐ 0' if TRAIN_FROM_SCRATCH else 'chạy tiếp từ checkpoint nếu có'}")
 print(f"IS_KAGGLE : {IS_KAGGLE}")
 print(f"REPO      : {REPO}   (ghi được: {os.access(REPO, os.W_OK)})")
 print(f"Nhánh Hub : {'smoke/...' if SMOKE_TEST else '(gốc repo)'}")
@@ -345,8 +373,12 @@ if SMOKE_TEST:
     chay(f"python scripts/train.py --config configs/base.yaml --seed {SEED} "
          f"--repo-hub {REPO_HUB} --smoke", "TASK 15 smoke")
 else:
+    # --tu-dau và --tiep-tuc loại trừ nhau: một cái bỏ qua checkpoint, cái kia đi
+    # tìm checkpoint. Bật cả hai thì train.py ưu tiên --tu-dau, nhưng viết rõ ra
+    # đây cho khỏi phải đoán.
+    nguon = "--tu-dau" if TRAIN_FROM_SCRATCH else "--tiep-tuc"
     chay(f"python scripts/train.py --config configs/base.yaml --seed {SEED} "
-         f"--repo-hub {REPO_HUB} --tiep-tuc --gio-toi-da {GIO_TOI_DA}", "TASK 15")
+         f"--repo-hub {REPO_HUB} {nguon} --gio-toi-da {GIO_TOI_DA}", "TASK 15")
 
 print("\n" + Path("docs/bao_cao_huan_luyen.md").read_text(encoding="utf-8"))
 '''),

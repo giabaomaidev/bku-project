@@ -222,6 +222,11 @@ def main() -> None:
                         help="ghi đè huan_luyen.so_buoc_toi_da")
     parser.add_argument("--repo-hub", default=None,
                         help="ghi đè thi_nghiem.hub_repo; để trống là không đồng bộ")
+    parser.add_argument("--tu-dau", action="store_true",
+                        help="HUẤN LUYỆN LẠI TỪ ĐẦU, bỏ qua mọi checkpoint đang có. "
+                             "Đường tái lập dành cho người chấm muốn dựng lại toàn bộ. "
+                             "Kết quả ghi vào một nhánh riêng nên KHÔNG đè lên lượt "
+                             "chạy chính.")
     parser.add_argument("--gio-toi-da", type=float, default=None,
                         help="ngân sách giờ cho lượt chạy này. Hết giờ thì tự lưu, "
                              "đẩy lên Hub rồi dừng, phiên sau --tiep-tuc là chạy tiếp. "
@@ -254,6 +259,11 @@ def main() -> None:
     ten_chay = f"{cfg.thi_nghiem.ten}_seed{cfg.thi_nghiem.seed}"
     if args.smoke:
         ten_chay = "smoke_" + ten_chay
+    if args.tu_dau:
+        # Tên riêng để lượt tái lập KHÔNG đè lên lượt chạy chính, cả ở đĩa lẫn
+        # trên Hub. Người chấm dựng lại từ đầu mà vô tình xóa mất checkpoint thật
+        # của nhóm thì đúng là mục 1.8 lặp lại lần thứ ba.
+        ten_chay += "_tu_dau"
     duong_dan_log = GOC / cfg.thi_nghiem.thu_muc_log / ten_chay
     thu_muc_checkpoint = GOC / cfg.thi_nghiem.thu_muc_checkpoint / ten_chay
 
@@ -275,16 +285,26 @@ def main() -> None:
         repo_hub=repo_hub,
         so_buoc_toi_da=so_buoc,
         gio_toi_da=args.gio_toi_da,
+        ten_chay=ten_chay,
     )
 
-    # --- Chạy tiếp từ Hub nếu được yêu cầu -----------------------------------
-    if args.tiep_tuc:
+    # --- Chạy tiếp, hoặc cố ý làm lại từ đầu ---------------------------------
+    if args.tu_dau:
+        print("[train] --tu-dau: BỎ QUA mọi checkpoint, huấn luyện lại từ số 0.")
+        print(f"[train] Kết quả ghi vào nhánh riêng '{ten_chay}', "
+              "không đụng tới lượt chạy chính.")
+    elif args.tiep_tuc:
         from nmt.training.hub_sync import tai_checkpoint_moi_nhat
 
         duong_dan_cuc_bo = thu_muc_checkpoint / "moi_nhat.pt"
         if not duong_dan_cuc_bo.exists() and repo_hub:
             print("[train] Không có checkpoint ở đĩa, thử kéo từ Hugging Face Hub...")
-            tai_ve = tai_checkpoint_moi_nhat(repo_hub, thu_muc_checkpoint)
+            # Kéo đúng đường dẫn mà trainer sẽ đẩy lên — dùng chung một hàm nên
+            # hai bên không thể lệch nhau, đúng bài học mục 1.7.
+            tai_ve = tai_checkpoint_moi_nhat(
+                repo_hub, thu_muc_checkpoint,
+                ten_tren_hub=trainer.duong_dan_hub("moi_nhat.pt"),
+            )
             if tai_ve is not None:
                 duong_dan_cuc_bo = tai_ve
 

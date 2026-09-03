@@ -124,9 +124,18 @@ class Trainer:
         repo_hub: str | None = None,
         so_buoc_toi_da: int | None = None,
         gio_toi_da: float | None = None,
+        ten_chay: str | None = None,
     ) -> None:
         self.cfg = cfg
         self.che_do = che_do
+
+        # TÊN LƯỢT CHẠY — quyết định đường dẫn trên Hub.
+        #
+        # Bản đầu viết cứng "checkpoints/moi_nhat.pt", nghĩa là MỌI lượt chạy đều
+        # ghi đè lên nhau. Với TASK 17 có 6 thí nghiệm ablation nhân 2 seed là 12
+        # lượt cùng bắn vào một chỗ — bảng ablation sẽ toàn số của lượt chạy cuối
+        # cùng mà không ai nhận ra. Đúng lại kiểu hỏng im lặng của mục 1.8.
+        self.ten_chay = ten_chay or f"{cfg.thi_nghiem.ten}_seed{cfg.thi_nghiem.seed}"
         self.logger = logger
         self.train_loader = train_loader
         self.dev_loader = dev_loader
@@ -352,7 +361,15 @@ class Trainer:
             so_lieu_them={"buoc_trong_epoch": self.buoc_trong_epoch},
         )
 
-    def _dong_bo_hub(self, duong_dan: Path, ten_tren_hub: str) -> None:
+    def duong_dan_hub(self, ten_file: str) -> str:
+        """Đường dẫn trên Hub, CÓ KÈM tên lượt chạy.
+
+        Nhờ vậy 12 lượt ablation của TASK 17 nằm ở 12 chỗ khác nhau thay vì đè lên
+        nhau. Dùng cả lúc đẩy lẫn lúc kéo về, nên hai bên không thể lệch nhau.
+        """
+        return f"checkpoints/{self.ten_chay}/{ten_file}"
+
+    def _dong_bo_hub(self, duong_dan: Path, ten_file: str) -> None:
         """Đẩy checkpoint và log lên Hub.
 
         Smoke test CŨNG đẩy, nhưng vào nhánh `smoke/` tách hẳn — có vậy lượt smoke
@@ -365,13 +382,17 @@ class Trainer:
 
         from nmt.training.hub_sync import TIEN_TO_LOG, day_len_hub, day_thu_muc_len_hub
 
-        day_len_hub(duong_dan, self.repo_hub, ten_tren_hub, che_do=self.che_do)
+        day_len_hub(duong_dan, self.repo_hub, self.duong_dan_hub(ten_file),
+                    che_do=self.che_do)
 
         # Đẩy CẢ log, nếu không thì kernel Kaggle chết là mất log và TASK 14
         # không vẽ được đường loss liền mạch qua các lần bị giết.
         if self.logger is not None:
+            # Log cũng phải tách theo lượt chạy, nếu không thì đường loss của 12
+            # lượt ablation trộn lẫn vào nhau trong cùng một file.
             day_thu_muc_len_hub(
-                self.logger.thu_muc, self.repo_hub, TIEN_TO_LOG, che_do=self.che_do
+                self.logger.thu_muc, self.repo_hub,
+                f"{TIEN_TO_LOG}/{self.ten_chay}", che_do=self.che_do,
             )
 
     def tiep_tuc_tu(self, duong_dan: str | Path) -> dict:
@@ -456,7 +477,7 @@ class Trainer:
                         self.loss_dev_tot_nhat = loss_dev
                         self.so_lan_khong_cai_thien = 0
                         duong_dan = self._luu(TEN_FILE_TOT_NHAT, loss_dev)
-                        self._dong_bo_hub(duong_dan, "checkpoints/tot_nhat.pt")
+                        self._dong_bo_hub(duong_dan, TEN_FILE_TOT_NHAT)
                     else:
                         self.so_lan_khong_cai_thien += 1
                         if self.so_lan_khong_cai_thien >= self.dung_som_sau:
@@ -479,7 +500,7 @@ class Trainer:
             # --- lưu checkpoint định kỳ ---------------------------------------
             if self.buoc % self.luu_checkpoint_moi == 0 or dung_som or het_gio:
                 duong_dan = self._luu(TEN_FILE_MOI_NHAT, None)
-                self._dong_bo_hub(duong_dan, "checkpoints/moi_nhat.pt")
+                self._dong_bo_hub(duong_dan, TEN_FILE_MOI_NHAT)
 
             if dung_som or het_gio:
                 break
@@ -487,7 +508,7 @@ class Trainer:
         # Luôn lưu một bản cuối, kể cả khi chạy hết số bước mà không rơi đúng vào
         # mốc luu_checkpoint_moi — thiếu bản này là mất trắng phần chạy sau mốc cuối.
         duong_dan_cuoi = self._luu(TEN_FILE_MOI_NHAT, None)
-        self._dong_bo_hub(duong_dan_cuoi, "checkpoints/moi_nhat.pt")
+        self._dong_bo_hub(duong_dan_cuoi, TEN_FILE_MOI_NHAT)
         if self.logger is not None:
             self.logger.dong()
 
