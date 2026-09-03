@@ -414,8 +414,29 @@ class Trainer:
         goi = torch.load(Path(duong_dan), map_location="cpu", weights_only=False)
         self.buoc_trong_epoch = goi.get("buoc_trong_epoch", 0)
 
+        # KHÔI PHỤC MỐC LOSS DEV TỐT NHẤT.
+        #
+        # moi_nhat.pt luôn lưu loss_dev = None (lúc lưu định kỳ chưa có số đánh
+        # giá), nên chỉ đọc từ nó thì mốc tốt nhất bị reset về vô cùng. Hậu quả:
+        # lần đánh giá đầu của phiên mới, DÙ TỆ HƠN, vẫn được coi là tốt nhất và
+        # ghi đè tot_nhat.pt; bộ đếm dừng sớm cũng đếm lại từ mốc sai.
+        #
+        # Đã xảy ra thật: phiên đầu đạt loss dev 2,2364 ở bước 6.000, phiên sau
+        # resume rồi ghi đè tot_nhat.pt bằng bản 2,3866 — tức là bản TỆ HƠN.
+        #
+        # Nên phải hỏi chính tot_nhat.pt nằm cạnh đó.
         if thong_tin["loss_dev"] is not None:
             self.loss_dev_tot_nhat = thong_tin["loss_dev"]
+        else:
+            duong_dan_tot_nhat = Path(duong_dan).parent / TEN_FILE_TOT_NHAT
+            if duong_dan_tot_nhat.exists():
+                from nmt.training.checkpoint import doc_thong_tin
+
+                loss_cu = doc_thong_tin(duong_dan_tot_nhat).get("loss_dev")
+                if loss_cu is not None:
+                    self.loss_dev_tot_nhat = loss_cu
+                    print(f"[trainer] Mốc loss dev tốt nhất lấy từ {TEN_FILE_TOT_NHAT}: "
+                          f"{loss_cu:.4f}")
 
         print(f"[trainer] Chạy tiếp từ bước {self.buoc} (epoch {self.epoch}, "
               f"batch {self.buoc_trong_epoch} trong epoch).")
