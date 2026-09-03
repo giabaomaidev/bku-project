@@ -125,6 +125,19 @@ REPO_HUB   = "mgbao/envi-nmt-scratch-transformer"    # ĐỔI THÀNH TÀI KHOẢ
 SEED       = 42
 GIO_TOI_DA = 10.5      # ngân sách mỗi phiên, dưới ngưỡng cắt 12 giờ của Kaggle
 
+# File cấu hình. Đổi dòng này là chạy được thí nghiệm ablation của TASK 17 và 18,
+# KHÔNG cần sửa dòng code nào khác — mỗi cấu hình có thi_nghiem.ten riêng nên
+# checkpoint, log và báo cáo đều tự nằm ở chỗ riêng, không đè lên nhau.
+#
+#   configs/base.yaml                        gốc
+#   configs/ablation_a1_layernorm.yaml       A1  RMSNorm  vs LayerNorm
+#   configs/ablation_a2_warmup.yaml          A2  warmup bật vs tắt
+#   configs/ablation_a3_label_smoothing.yaml A3  label smoothing 0,1 vs 0
+#   configs/ablation_a4_sincos.yaml          A4  RoPE     vs sin-cos
+#   configs/ablation_a5_relu.yaml            A5  SwiGLU   vs ReLU
+#   configs/ablation_a6_post_norm.yaml       A6  Pre-Norm vs Post-Norm
+CAU_HINH = "configs/base.yaml"
+
 # ====================================================
 
 import glob
@@ -240,6 +253,7 @@ def chay(lenh, mo_ta=""):
     return ket_qua
 
 
+print(f"CẤU HÌNH  : {CAU_HINH}")
 print(f"CHẾ ĐỘ    : {'SMOKE TEST (chạy nháp)' if SMOKE_TEST else 'HUẤN LUYỆN THẬT'}")
 print(f"NGUỒN     : {'DỰNG LẠI TỪ SỐ 0' if TRAIN_FROM_SCRATCH else 'chạy tiếp từ checkpoint nếu có'}")
 print(f"IS_KAGGLE : {IS_KAGGLE}")
@@ -303,6 +317,14 @@ for f in sorted(api.list_repo_files(repo_id=REPO_HUB, token=TOKEN)):
 
     md("## Cell 4 — Chuẩn bị dữ liệu và tokenizer"),
     code(r'''
+# CỐ Ý dùng base.yaml chứ không dùng CAU_HINH ở hai lệnh dưới.
+#
+# Dữ liệu và tokenizer là TÀI NGUYÊN DÙNG CHUNG cho mọi thí nghiệm. Các file
+# ablation chỉ ghi đè phần mo_hinh và toi_uu, còn nhánh du_lieu thì kế thừa nguyên
+# từ base — nên chạy bằng cấu hình nào cũng ra đúng một kết quả.
+#
+# Quan trọng hơn: nếu mỗi ablation tự sinh một tokenizer riêng thì token ID giữa
+# các lượt không khớp nhau, và bảng so sánh trở nên vô nghĩa mà không ai nhận ra.
 if not Path("data/processed/train.en").exists():
     chay("python scripts/prepare_data.py --config configs/base.yaml")
 else:
@@ -331,7 +353,7 @@ day_len_hub("artifacts/tokenizer/tokenizer.json", REPO_HUB, TEN_TOKENIZER, che_d
     md("## Cell 5 — TASK 11: khảo sát cấu hình và ngân sách GPU"),
     code(r'''
 co_nhanh = "--nhanh" if SMOKE_TEST else "--so-buoc 30"
-chay(f"python scripts/benchmark_speed.py --config configs/base.yaml {co_nhanh}",
+chay(f"python scripts/benchmark_speed.py --config {CAU_HINH} {co_nhanh}",
      "TASK 11")
 
 print("\n" + Path("docs/ngan_sach_tinh_toan.md").read_text(encoding="utf-8"))
@@ -348,7 +370,7 @@ rồi báo cả nhóm, **đừng tự sửa `src/` một mình**.
 if SMOKE_TEST:
     print("Bỏ qua cổng chặn overfit ở lượt smoke — nó cần chạy đủ mới có ý nghĩa.")
 else:
-    chay("python scripts/overfit_sanity.py --config configs/base.yaml",
+    chay(f"python scripts/overfit_sanity.py --config {CAU_HINH}",
          "cổng chặn overfit 50 câu")
 
     from IPython.display import Image, display
@@ -370,14 +392,14 @@ tiếp theo lại bắt đầu lại từ số 0.
     code(r'''
 if SMOKE_TEST:
     # Vài bước trên vài trăm câu. Không học được gì, chỉ để chắc không crash.
-    chay(f"python scripts/train.py --config configs/base.yaml --seed {SEED} "
+    chay(f"python scripts/train.py --config {CAU_HINH} --seed {SEED} "
          f"--repo-hub {REPO_HUB} --smoke", "TASK 15 smoke")
 else:
     # --tu-dau và --tiep-tuc loại trừ nhau: một cái bỏ qua checkpoint, cái kia đi
     # tìm checkpoint. Bật cả hai thì train.py ưu tiên --tu-dau, nhưng viết rõ ra
     # đây cho khỏi phải đoán.
     nguon = "--tu-dau" if TRAIN_FROM_SCRATCH else "--tiep-tuc"
-    chay(f"python scripts/train.py --config configs/base.yaml --seed {SEED} "
+    chay(f"python scripts/train.py --config {CAU_HINH} --seed {SEED} "
          f"--repo-hub {REPO_HUB} {nguon} --gio-toi-da {GIO_TOI_DA}", "TASK 15")
 
 print("\n" + Path("docs/bao_cao_huan_luyen.md").read_text(encoding="utf-8"))
@@ -386,7 +408,7 @@ print("\n" + Path("docs/bao_cao_huan_luyen.md").read_text(encoding="utf-8"))
     md("## Cell 8 — TASK 14: thí nghiệm giết phiên và phục hồi"),
     code(r'''
 co_nhanh = "--nhanh" if SMOKE_TEST else "--so-buoc 60"
-chay(f"python scripts/thi_nghiem_phuc_hoi.py --config configs/base.yaml {co_nhanh}",
+chay(f"python scripts/thi_nghiem_phuc_hoi.py --config {CAU_HINH} {co_nhanh}",
      "TASK 14")
 
 from IPython.display import Image, display

@@ -28,6 +28,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None, help="ghi đè thi_nghiem.seed")
     parser.add_argument("--checkpoint", type=str, help="Đường dẫn tới checkpoint (.pt) đã huấn luyện")
     parser.add_argument("--split", type=str, choices=["dev", "test"], default="test", help="Tập đánh giá (dev hoặc test)")
+    parser.add_argument("--cho-phep-ngau-nhien", action="store_true",
+                        help="Cho phép chạy KHÔNG có checkpoint. Điểm ra sẽ vô nghĩa, "
+                             "chỉ dùng để kiểm script không crash.")
+    parser.add_argument("--cho-phep-smoke", action="store_true",
+                        help="Cho phép chấm điểm trên checkpoint của smoke test. "
+                             "Mặc định TỪ CHỐI, vì điểm đó không phải kết quả thật.")
     args = parser.parse_args()
 
     cfg = nap_config(args.config)
@@ -61,12 +67,61 @@ def main() -> None:
         device = torch.device("cpu")
     model = TransformerNMT(cfg).to(device)
     
-    if args.checkpoint and os.path.exists(args.checkpoint):
-        checkpoint = torch.load(args.checkpoint, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
-        print(f"Đã nạp checkpoint từ {args.checkpoint}")
+    # ------------------------------------------------------------------ nạp checkpoint
+    #
+    # BA LỖI CỦA BẢN CŨ, cả ba đều thuộc loại "chạy được nhưng sai":
+    #
+    # 1. Nó tìm khóa "model_state_dict", nhưng luu_checkpoint của TASK 12 lưu dưới
+    #    khóa "model". Không khớp thì nhánh dự phòng nạp NGUYÊN CẢ dict checkpoint
+    #    làm state_dict, và ném RuntimeError vì thừa các khóa phien_ban, che_do,
+    #    buoc, rng... Nói cách khác: TASK 16 chạy trên checkpoint thật là chết.
+    #
+    # 2. Gõ sai đường dẫn thì `os.path.exists` trả False, rơi xuống nhánh else,
+    #    IN MỘT CẢNH BÁO RỒI CHẤM ĐIỂM BẰNG TRỌNG SỐ NGẪU NHIÊN — và vẫn nối thêm
+    #    một dòng BLEU vào results/diem_chinh.csv. Ai liếc bảng điểm sẽ thấy một
+    #    con số trông bình thường.
+    #
+    # 3. Không kiểm che_do, nên chấm nhầm checkpoint smoke test mà không hay biết.
+    #    Đúng mục 1.9 của Sưu tập lỗi.md.
+    thong_tin_ck = None
+    if args.checkpoint:
+        duong_dan_ck = Path(args.checkpoint)
+        if not duong_dan_ck.exists():
+            raise SystemExit(
+                f"Không thấy checkpoint: {duong_dan_ck}\n"
+                "Dừng ở đây thay vì lặng lẽ chấm điểm bằng trọng số ngẫu nhiên."
+            )
+
+        from nmt.training.checkpoint import CHE_DO_THAT, nap_checkpoint
+
+        try:
+            thong_tin_ck = nap_checkpoint(
+                duong_dan_ck, model, map_location=device,
+                che_do_mong_doi=None if args.cho_phep_smoke else CHE_DO_THAT,
+                khoi_phuc_rng=False,      # chấm điểm thì không cần đụng RNG
+            )
+            print(f"Đã nạp checkpoint {duong_dan_ck} — bước {thong_tin_ck['buoc']:,}, "
+                  f"epoch {thong_tin_ck['epoch']}, chế độ {thong_tin_ck['che_do']}")
+        except RuntimeError as loi:
+            # Checkpoint đời cũ hoặc do người khác sinh ra, không theo định dạng
+            # của TASK 12. Thử nạp thẳng, nhưng nói rõ là đang đi đường dự phòng.
+            print(f"[eval] Không đọc được theo định dạng TASK 12 ({loi})")
+            print("[eval] Thử nạp như state_dict thuần...")
+            goi = torch.load(duong_dan_ck, map_location=device, weights_only=False)
+            model.load_state_dict(goi.get("model_state_dict", goi))
+            print(f"Đã nạp checkpoint từ {duong_dan_ck} (đường dự phòng)")
+
+    elif args.cho_phep_ngau_nhien:
+        print("CẢNH BÁO: chạy bằng TRỌNG SỐ NGẪU NHIÊN. Điểm dưới đây vô nghĩa, "
+              "chỉ dùng để kiểm script không crash.")
     else:
-        print("CẢNH BÁO: Không có checkpoint, mô hình đang chạy bằng trọng số ngẫu nhiên!")
+        raise SystemExit(
+            "Chưa truyền --checkpoint.\n"
+            "Chấm điểm không có checkpoint thì BLEU chỉ là nhiễu, mà nó vẫn được "
+            "ghi vào results/diem_chinh.csv như một kết quả thật.\n"
+            "  Chấm thật    : --checkpoint artifacts/checkpoints/<ten_chay>/tot_nhat.pt\n"
+            "  Chỉ thử script: thêm cờ --cho-phep-ngau-nhien"
+        )
 
     model.eval()
     
@@ -114,7 +169,11 @@ def main() -> None:
         "chrF++": chrf,
         "Chữ ký BLEU": bleu_sig,
         "Chữ ký chrF++": chrf_sig,
-        "Checkpoint": args.checkpoint or "Random weights"
+        "Checkpoint": args.checkpoint or "TRỌNG SỐ NGẪU NHIÊN — không phải kết quả thật",
+        # Ghi kèm số bước và chế độ, để bảng điểm nói được nó chấm bản nào. Thiếu
+        # hai cột này thì 12 lượt ablation cho ra 12 dòng nhìn y hệt nhau.
+        "Bước": thong_tin_ck["buoc"] if thong_tin_ck else "",
+        "Chế độ": thong_tin_ck["che_do"] if thong_tin_ck else "",
     }])
     
     # Nối thêm (append) nếu file đã tồn tại

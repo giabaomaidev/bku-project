@@ -217,6 +217,57 @@ def viet_bao_cao(duong_dan: Path, cfg, model, ket_qua: dict, giay_chay: float,
     print(f"[train] Đã ghi báo cáo: {duong_dan}")
 
 
+def ghi_dong_tong_hop(duong_dan: Path, cfg, ket_qua: dict, ten_chay: str,
+                      giay_chay: float) -> None:
+    """Nối một dòng vào bảng tổng hợp mọi lượt chạy.
+
+    ĐÂY LÀ THỨ LÀM CHO TASK 17 VÀ 18 DỄ THỞ. Ablation có 6 thí nghiệm nhân 2 seed
+    là 12 lượt; không có bảng này thì người làm phải mở 12 file báo cáo rồi chép
+    tay từng con số vào bảng so sánh — vừa lâu vừa dễ chép nhầm.
+
+    Mỗi cột là một yếu tố mà ablation đang xét, nên chỉ cần mở file CSV ra là thấy
+    ngay cấu hình nào đổi gì và cho loss dev bao nhiêu.
+    """
+    import csv
+
+    dong = {
+        "ten_chay": ten_chay,
+        "cau_hinh": cfg.thi_nghiem.get("duong_dan_config", ""),
+        "seed": cfg.thi_nghiem.seed,
+        # Bốn công tắc kiến trúc — A1, A6, A5, A4
+        "kieu_chuan_hoa": cfg.mo_hinh.kieu_chuan_hoa,
+        "vi_tri_chuan_hoa": cfg.mo_hinh.vi_tri_chuan_hoa,
+        "kieu_ffn": cfg.mo_hinh.kieu_ffn,
+        "d_ff": cfg.mo_hinh.d_ff,
+        "ma_hoa_vi_tri": cfg.mo_hinh.ma_hoa_vi_tri,
+        # Hai công tắc huấn luyện — A2, A3
+        "scheduler": cfg.toi_uu.scheduler,
+        "label_smoothing": cfg.toi_uu.label_smoothing,
+        # Kết quả
+        "buoc_cuoi": ket_qua["buoc_cuoi"],
+        "loss_dev_tot_nhat": (
+            f"{ket_qua['loss_dev_tot_nhat']:.4f}"
+            if ket_qua.get("loss_dev_tot_nhat") is not None else ""
+        ),
+        "perplexity_dev": (
+            f"{math.exp(min(ket_qua['loss_dev_tot_nhat'], 20.0)):.2f}"
+            if ket_qua.get("loss_dev_tot_nhat") is not None else ""
+        ),
+        "dung_som": ket_qua["dung_som"],
+        "da_xong_toan_bo": ket_qua.get("da_xong_toan_bo", False),
+        "gio_chay": f"{giay_chay / 3600:.2f}",
+    }
+
+    duong_dan.parent.mkdir(parents=True, exist_ok=True)
+    da_co = duong_dan.exists() and duong_dan.stat().st_size > 0
+    with duong_dan.open("a", encoding="utf-8", newline="") as f:
+        ghi = csv.DictWriter(f, fieldnames=list(dong.keys()))
+        if not da_co:
+            ghi.writeheader()
+        ghi.writerow(dong)
+    print(f"[train] Đã nối một dòng vào bảng tổng hợp: {duong_dan}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/base.yaml")
@@ -387,6 +438,14 @@ def main() -> None:
     bao_cao_chinh.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(duong_dan_bao_cao, bao_cao_chinh)
     print(f"[train] Đã chép sang bản chính thức: {bao_cao_chinh}")
+
+    # Bảng tổng hợp mọi lượt chạy — nguyên liệu sẵn cho bảng ablation của TASK 17/18.
+    # Chỉ ghi cho lượt chạy thật; smoke test lẫn vào là bảng có dòng rác.
+    if not args.smoke:
+        ghi_dong_tong_hop(
+            GOC / "results" / "tong_hop_ablation.csv",
+            cfg, ket_qua, ten_chay, giay_chay,
+        )
 
     print("\n" + "=" * 70)
     print(f"XONG sau {giay_chay / 60:.1f} phút · {ket_qua['so_buoc_da_chay']:,} bước")
