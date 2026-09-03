@@ -103,6 +103,7 @@ class Trainer:
         thu_muc_checkpoint: str | Path | None = None,
         repo_hub: str | None = None,
         so_buoc_toi_da: int | None = None,
+        gio_toi_da: float | None = None,
     ) -> None:
         self.cfg = cfg
         self.che_do = che_do
@@ -151,6 +152,17 @@ class Trainer:
         )
         self.thu_muc_checkpoint.mkdir(parents=True, exist_ok=True)
         self.repo_hub = repo_hub
+
+        # NGÂN SÁCH THỜI GIAN — thứ khiến lượt train dài chạy được trên Kaggle free.
+        #
+        # Phiên GPU của Kaggle bị cắt ở khoảng 12 tiếng. Lượt chạy 60.000 bước mất
+        # hơn 13 tiếng nên chắc chắn bị giết giữa chừng, và nếu đúng lúc đó chưa
+        # đẩy được checkpoint lên Hub thì mất trắng cả lượt.
+        #
+        # Đặt ngân sách thấp hơn giới hạn phiên thì trainer tự dừng, tự lưu, tự
+        # đẩy lên Hub trong lúc còn sống. Phiên sau chỉ cần --tiep-tuc là chạy tiếp
+        # đúng chỗ cũ. Huấn luyện dài trở thành nhiều chặng ngắn nối nhau.
+        self.gio_toi_da = gio_toi_da
 
         # --- Trạng thái chạy -------------------------------------------------
         self.buoc = 0
@@ -310,8 +322,14 @@ class Trainer:
         )
 
     def _dong_bo_hub(self, duong_dan: Path, ten_tren_hub: str) -> None:
-        """Đẩy checkpoint và log lên Hub. Smoke test tự động bỏ qua."""
-        if not self.repo_hub or self.che_do == CHE_DO_SMOKE:
+        """Đẩy checkpoint và log lên Hub.
+
+        Smoke test CŨNG đẩy, nhưng vào nhánh `smoke/` tách hẳn — có vậy lượt smoke
+        mới kiểm được luôn cơ chế đẩy, thứ đã âm thầm hỏng suốt 13 tiếng vì repo
+        chưa được tạo. Chuyện smoke đè lên bản thật đã có hai lớp chặn: tiền tố
+        riêng trong hub_sync, và `che_do_mong_doi` trong nap_checkpoint.
+        """
+        if not self.repo_hub:
             return
 
         from nmt.training.hub_sync import TIEN_TO_LOG, day_len_hub, day_thu_muc_len_hub
@@ -359,12 +377,17 @@ class Trainer:
         luong = self._luong_batch()
 
         moc_thoi_gian = time.perf_counter()
+        moc_bat_dau_chay = time.perf_counter()
         token_tu_lan_ghi_truoc = 0
         buoc_bat_dau = self.buoc
         dung_som = False
+        het_gio = False
 
         print(f"[trainer] Thiết bị {self.thiet_bi} · fp16 {'BẬT' if self.dung_fp16 else 'TẮT'} · "
               f"cộng dồn {self.so_buoc_cong_don} · chế độ {self.che_do}")
+        if self.gio_toi_da:
+            print(f"[trainer] Ngân sách thời gian: {self.gio_toi_da:.2f} giờ. "
+                  "Hết giờ sẽ tự lưu và dừng để phiên sau chạy tiếp.")
 
         while self.buoc < self.so_buoc_toi_da:
             loss_train, so_token = self._mot_buoc_cap_nhat(luong)
@@ -411,12 +434,24 @@ class Trainer:
                                   "liên tiếp không cải thiện.")
                             dung_som = True
 
+            # --- hết ngân sách thời gian --------------------------------------
+            #
+            # Kiểm ở đây, TRƯỚC khối lưu checkpoint bên dưới, để lượt chạy luôn
+            # kết thúc bằng một checkpoint đã đẩy lên Hub thành công.
+            if self.gio_toi_da is not None:
+                gio_da_chay = (time.perf_counter() - moc_bat_dau_chay) / 3600
+                if gio_da_chay >= self.gio_toi_da:
+                    print(f"[trainer] Hết ngân sách {self.gio_toi_da:.2f} giờ tại bước "
+                          f"{self.buoc}/{self.so_buoc_toi_da}. Lưu lại rồi dừng.")
+                    print("[trainer] Phiên sau chạy tiếp bằng cờ --tiep-tuc.")
+                    het_gio = True
+
             # --- lưu checkpoint định kỳ ---------------------------------------
-            if self.buoc % self.luu_checkpoint_moi == 0 or dung_som:
+            if self.buoc % self.luu_checkpoint_moi == 0 or dung_som or het_gio:
                 duong_dan = self._luu(TEN_FILE_MOI_NHAT, None)
                 self._dong_bo_hub(duong_dan, "checkpoints/moi_nhat.pt")
 
-            if dung_som:
+            if dung_som or het_gio:
                 break
 
         # Luôn lưu một bản cuối, kể cả khi chạy hết số bước mà không rơi đúng vào
@@ -435,5 +470,7 @@ class Trainer:
                 self.loss_dev_tot_nhat if math.isfinite(self.loss_dev_tot_nhat) else None
             ),
             "dung_som": dung_som,
+            "het_gio": het_gio,
+            "da_xong_toan_bo": self.buoc >= self.so_buoc_toi_da or dung_som,
             "checkpoint_moi_nhat": str(duong_dan_cuoi),
         }

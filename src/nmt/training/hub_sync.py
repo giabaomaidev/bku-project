@@ -58,6 +58,9 @@ TIEN_TO_SMOKE = "smoke"
 
 GIAY_CHO_GIUA_HAI_LAN_THU = 5
 
+# Các repo đã được bảo đảm tồn tại trong tiến trình này. Xem `_dam_bao_mot_lan`.
+_REPO_DA_DAM_BAO: set[str] = set()
+
 
 def doc_token(bat_buoc: bool = True) -> str | None:
     """Kaggle Secrets -> biến môi trường -> báo lỗi.
@@ -144,10 +147,32 @@ def dam_bao_repo(repo_id: str, token: str | None = None, rieng_tu: bool = True) 
             private=rieng_tu,
             exist_ok=True,
         )
+        _REPO_DA_DAM_BAO.add(repo_id)
         return True
     except Exception as loi:
         print(f"[hub_sync] Không tạo/mở được repo {repo_id}: {_giai_thich_loi_mang(loi)}")
         return False
+
+
+def _dam_bao_mot_lan(repo_id: str, token: str | None = None) -> None:
+    """Tạo repo ở LẦN ĐẨY ĐẦU TIÊN, sau đó không gọi lại nữa.
+
+    Vì sao cần: bản đầu chỉ gọi `dam_bao_repo` trong scripts/train.py, mà lại đặt
+    SAU `trainer.train()`. Thành ra suốt cả lượt huấn luyện, mọi lần đẩy checkpoint
+    đều bắn vào một repo chưa tồn tại và trả về RepositoryNotFoundError. Hàm đẩy
+    không ném lỗi (đúng thiết kế, để mất mạng một nhịp thì train vẫn chạy tiếp),
+    nên chuyện này diễn ra âm thầm suốt 13 tiếng: Hugging Face trống trơn, mỗi lần
+    lưu còn phí thêm ~15 giây cho ba lần thử lại.
+
+    Đặt việc tạo repo ngay trong hàm đẩy thì KHÔNG CÒN thứ tự gọi nào làm hỏng nó
+    được nữa. Sửa ở một chỗ, mọi nơi gọi đều đúng.
+    """
+    if repo_id in _REPO_DA_DAM_BAO:
+        return
+    dam_bao_repo(repo_id, token=token)
+    # Thêm vào tập kể cả khi tạo hỏng, để không thử đi thử lại ở mỗi lần đẩy.
+    # Lần đẩy ngay sau đó sẽ tự báo lỗi rõ ràng nếu repo thật sự không dùng được.
+    _REPO_DA_DAM_BAO.add(repo_id)
 
 
 def liet_ke_file(repo_id: str, token: str | None = None) -> list[str]:
@@ -192,15 +217,19 @@ def day_len_hub(
         print(f"[hub_sync] Bỏ qua, không có file: {duong_dan_file}")
         return False
 
-    if che_do == CHE_DO_SMOKE:
-        print(f"[hub_sync] Chế độ smoke: KHÔNG đẩy {duong_dan_file.name} lên Hub.")
-        return False
-
+    # Smoke test VẪN đẩy lên Hub, nhưng vào nhánh `smoke/` tách hẳn. Có vậy mới
+    # kiểm được luôn cơ chế đẩy — thứ đã âm thầm hỏng suốt 13 tiếng vì repo chưa
+    # được tạo. Còn chuyện smoke đè lên bản thật thì đã có hai lớp chặn: tiền tố
+    # riêng ở đây, và `che_do_mong_doi` trong nap_checkpoint.
     duong_dan_tren_hub = _tien_to_theo_che_do(ten_tren_hub, che_do)
     token = token or doc_token(bat_buoc=False)
     if token is None:
         print(f"[hub_sync] Không có {TEN_BIEN_TOKEN} nên bỏ qua đồng bộ {duong_dan_tren_hub}.")
         return False
+
+    # Tạo repo ở lần đẩy đầu tiên. Không có dòng này thì mọi lần đẩy trong lúc
+    # huấn luyện đều rơi vào RepositoryNotFoundError mà không ai biết.
+    _dam_bao_mot_lan(repo_id, token)
 
     from huggingface_hub import HfApi
 
@@ -249,14 +278,12 @@ def day_thu_muc_len_hub(
         print(f"[hub_sync] Bỏ qua, không có thư mục: {thu_muc}")
         return False
 
-    if che_do == CHE_DO_SMOKE:
-        print(f"[hub_sync] Chế độ smoke: KHÔNG đẩy thư mục {thu_muc.name} lên Hub.")
-        return False
-
     token = token or doc_token(bat_buoc=False)
     if token is None:
         print(f"[hub_sync] Không có {TEN_BIEN_TOKEN} nên bỏ qua đồng bộ thư mục {thu_muc}.")
         return False
+
+    _dam_bao_mot_lan(repo_id, token)
 
     from huggingface_hub import HfApi
 

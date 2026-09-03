@@ -91,19 +91,35 @@ def nap_du_lieu(cfg, smoke: bool):
             tap._src = tap._src[:SO_CAU_SMOKE]
             tap._tgt = tap._tgt[:SO_CAU_SMOKE]
 
+    # Windows dùng spawn chứ không fork, nên DataLoader nhiều worker vừa chậm vừa
+    # hay trục trặc; Linux (Kaggle, nơi lượt train thật diễn ra) thì chạy tốt và
+    # nhanh hơn hẳn. Hạ xuống 0 đúng trên Windows là biện pháp phòng thủ rẻ tiền.
+    #
+    # NÓI RÕ ĐỂ KHÔNG AI HIỂU NHẦM: dòng này KHÔNG sửa được cú segfault (mã 139)
+    # khi chạy mô hình đầy đủ 48 triệu tham số trên CPU Windows. Cú đó vẫn còn và
+    # CHƯA tìm ra nguyên nhân — đã loại trừ được số worker (vẫn chết với 0 worker)
+    # và bộ nhớ (forward + backward rời với batch 40x100 chạy bình thường).
+    # Trên Kaggle T4 thì train.py --smoke chạy qua, nên đây là chuyện của môi
+    # trường Windows + CPU, không chặn đường huấn luyện thật.
+    so_worker = cfg.du_lieu.so_worker
+    if sys.platform == "win32" and so_worker > 0:
+        print(f"[train] Windows: hạ so_worker {so_worker} -> 0 để tránh segfault của "
+              "DataLoader đa tiến trình. Trên Kaggle (Linux) vẫn giữ nguyên cấu hình.")
+        so_worker = 0
+
     generator = sinh_generator(cfg.thi_nghiem.seed)
     train_loader = tao_dataloader(
         train_set,
         so_token_moi_batch=cfg.du_lieu.so_token_moi_batch,
         gom_theo_do_dai=cfg.du_lieu.gom_theo_do_dai,
-        so_worker=cfg.du_lieu.so_worker,
+        so_worker=so_worker,
         generator=generator,
     )
     dev_loader = tao_dataloader(
         dev_set,
         so_token_moi_batch=cfg.du_lieu.so_token_moi_batch,
         gom_theo_do_dai=True,
-        so_worker=cfg.du_lieu.so_worker,
+        so_worker=so_worker,
         tron=False,
         generator=generator,
     )
@@ -206,6 +222,10 @@ def main() -> None:
                         help="ghi đè huan_luyen.so_buoc_toi_da")
     parser.add_argument("--repo-hub", default=None,
                         help="ghi đè thi_nghiem.hub_repo; để trống là không đồng bộ")
+    parser.add_argument("--gio-toi-da", type=float, default=None,
+                        help="ngân sách giờ cho lượt chạy này. Hết giờ thì tự lưu, "
+                             "đẩy lên Hub rồi dừng, phiên sau --tiep-tuc là chạy tiếp. "
+                             "Kaggle cắt phiên GPU ở khoảng 12 giờ nên nên đặt 10-11.")
     args = parser.parse_args()
 
     cfg = nap_config(args.config)
@@ -220,11 +240,13 @@ def main() -> None:
 
     che_do = CHE_DO_SMOKE if args.smoke else CHE_DO_THAT
 
-    # Repo Hub: smoke test KHÔNG đồng bộ; và nếu cấu hình mẫu còn để chỗ trống
-    # thì cũng bỏ qua, thay vì cố đẩy lên một repo tên "<ten-tai-khoan-hf>/...".
+    # Smoke test VẪN đồng bộ Hub, nhưng mọi thứ rơi vào nhánh `smoke/` tách hẳn —
+    # nhờ đó lượt smoke kiểm được luôn cơ chế đẩy, đúng thứ đã âm thầm hỏng suốt
+    # 13 tiếng. Chỉ bỏ qua khi cấu hình mẫu còn để chỗ trống, thay vì cố đẩy lên
+    # một repo tên "<ten-tai-khoan-hf>/...".
     repo_hub = args.repo_hub or cfg.thi_nghiem.get("hub_repo")
-    if args.smoke or not repo_hub or "<" in str(repo_hub):
-        if not args.smoke and repo_hub and "<" in str(repo_hub):
+    if not repo_hub or "<" in str(repo_hub):
+        if repo_hub and "<" in str(repo_hub):
             print(f"[train] thi_nghiem.hub_repo vẫn là chỗ trống ({repo_hub!r}) nên bỏ qua "
                   "đồng bộ Hub. Sửa configs/base.yaml hoặc truyền --repo-hub.")
         repo_hub = None
@@ -252,6 +274,7 @@ def main() -> None:
         thu_muc_checkpoint=thu_muc_checkpoint,
         repo_hub=repo_hub,
         so_buoc_toi_da=so_buoc,
+        gio_toi_da=args.gio_toi_da,
     )
 
     # --- Chạy tiếp từ Hub nếu được yêu cầu -----------------------------------
@@ -269,6 +292,24 @@ def main() -> None:
             trainer.tiep_tuc_tu(duong_dan_cuc_bo)
         else:
             print("[train] Không tìm thấy checkpoint nào — huấn luyện từ đầu.")
+
+    # --- Tạo repo Hub TRƯỚC khi train ----------------------------------------
+    #
+    # Bản đầu gọi dam_bao_repo() SAU trainer.train(), nên suốt cả lượt huấn luyện
+    # mọi lần đẩy checkpoint đều bắn vào một repo chưa tồn tại. Hàm đẩy không ném
+    # lỗi (đúng thiết kế) nên chuyện đó diễn ra âm thầm 13 tiếng liền: Hugging Face
+    # trống trơn, và mỗi lần lưu còn phí thêm ~15 giây cho ba lần thử lại.
+    #
+    # Đặt ở đây còn được thêm một cái lợi: token sai loại hay repo không tạo được
+    # thì biết ngay trong vài giây đầu, chứ không phải sau khi đã đốt hết giờ GPU.
+    if repo_hub:
+        from nmt.training.hub_sync import dam_bao_repo
+
+        if dam_bao_repo(repo_hub):
+            print(f"[train] Repo Hub sẵn sàng: {repo_hub}")
+        else:
+            print(f"[train] CẢNH BÁO: không mở được {repo_hub}. Huấn luyện vẫn chạy, "
+                  "checkpoint vẫn ghi xuống đĩa, nhưng sẽ KHÔNG đồng bộ lên Hub.")
 
     # --- Huấn luyện -----------------------------------------------------------
     luu_config(cfg, GOC / "results" / "cau_hinh_da_gop.yaml")
@@ -302,6 +343,16 @@ def main() -> None:
     print(f"XONG sau {giay_chay / 60:.1f} phút · {ket_qua['so_buoc_da_chay']:,} bước")
     if ket_qua.get("loss_dev_tot_nhat") is not None:
         print(f"loss dev tốt nhất: {ket_qua['loss_dev_tot_nhat']:.4f}")
+
+    if ket_qua.get("het_gio"):
+        con_lai = cfg.huan_luyen.so_buoc_toi_da - ket_qua["buoc_cuoi"]
+        print()
+        print(f"CHƯA XONG TOÀN BỘ — còn {con_lai:,} bước "
+              f"({ket_qua['buoc_cuoi']:,}/{cfg.huan_luyen.so_buoc_toi_da:,}).")
+        print("Checkpoint đã lưu và đã đẩy lên Hub. Mở phiên Kaggle mới rồi chạy:")
+        print(f"  python scripts/train.py --config {args.config} "
+              f"--seed {cfg.thi_nghiem.seed} --repo-hub {repo_hub} --tiep-tuc "
+              f"--gio-toi-da {args.gio_toi_da}")
     print("=" * 70)
 
 

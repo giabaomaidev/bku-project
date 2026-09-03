@@ -2,8 +2,15 @@
 
 VÌ SAO SINH BẰNG MÃ CHỨ KHÔNG SỬA TAY — mục 2.7 của `Sưu tập lỗi.md`:
     Ở đồ án trước, sửa JSON của .ipynb bằng script vá tại chỗ đã xóa mất nguyên
-    một cell, khiến cell sau dùng biến chưa định nghĩa. Notebook là JSON, sửa tay
-    rất dễ hỏng mà không thấy ngay.
+    một cell, khiến cell sau dùng biến chưa định nghĩa.
+
+BỐ CỤC NOTEBOOK — học từ notebook LegalIR đã chạy thành công:
+    - MỘT cell cấu hình duy nhất ở đầu, chứa mọi công tắc
+    - SMOKE_TEST là công tắc bật/tắt, KHÔNG phải một bước riêng trong cùng lượt
+      Run All. Chạy Run All với True, xanh hết thì đổi thành False rồi Run All lại
+    - Smoke test đẩy lên Hub ở nhánh `smoke/` tách hẳn, nhờ vậy kiểm được luôn cơ
+      chế đẩy mà không đụng vào dữ liệu thật
+    - Thử ghi lên Hub NGAY từ đầu, trước khi tốn một giây GPU nào
 
 Chạy:  python scripts/tao_notebook_kaggle.py
 """
@@ -36,7 +43,17 @@ CAC_CELL = [
     md(r"""
 # ENVI-NMT — Huấn luyện trên Kaggle T4
 
-**Phase 3 — TASK 11 tới TASK 15.** Notebook này chạy được từ đầu tới cuối bằng Run All.
+**Phase 3 — TASK 11 tới TASK 15.**
+
+## Cách dùng: chạy Run All HAI LẦN
+
+| Lượt | Đặt gì ở Cell 2 | Mất bao lâu | Để làm gì |
+|---|---|---|---|
+| **1** | `SMOKE_TEST = True` | ~5 phút | Chứng minh Run All không crash. Đẩy lên nhánh `smoke/` trên Hub để kiểm luôn cơ chế đẩy |
+| **2** | `SMOKE_TEST = False` | ~10,5 giờ mỗi phiên | Huấn luyện thật |
+
+Lượt 1 mà đỏ ở bất kỳ đâu thì **sửa xong hãy sang lượt 2**. Đó là toàn bộ lý do
+smoke test tồn tại — bắt lỗi trước khi đốt giờ GPU.
 
 ## Trước khi bấm Run All, kiểm đủ 4 thứ
 
@@ -44,35 +61,25 @@ CAC_CELL = [
 |---|---|---|
 | 1 | **GPU T4** | panel phải → Accelerator → **GPU T4 x2** |
 | 2 | **Internet BẬT** | panel phải → Settings → Internet → **On** (mặc định TẮT) |
-| 3 | **Dataset code** | Add Input → Datasets → thêm bản zip repo đã upload |
-| 4 | **HF_TOKEN** | Add-ons → Secrets → thêm `HF_TOKEN` (loại **Write**) → **bật công tắc cho notebook này** |
+| 3 | **Dataset code** | Add Input → Datasets → bản zip repo đã upload |
+| 4 | **HF_TOKEN** | Add-ons → Secrets → `HF_TOKEN` loại **Write** → **bật công tắc cho notebook này** |
 
-> Nếu gắn Secret **sau** khi phiên đã khởi động thì phải **Run → Restart session**,
-> không thì notebook vẫn báo không có token (mục 1.4 của `Sưu tập lỗi.md`).
+> Gắn Secret **sau** khi phiên đã khởi động thì phải **Run → Restart session**.
 
-## Thứ tự chạy
+## Huấn luyện dài chạy nhiều phiên
 
-1. Cell cài đặt (mọi thư viện nằm ở đây, không rải rác)
-2. Dò môi trường và đường dẫn
-3. Kiểm GPU + token
-4. Chuẩn bị dữ liệu và tokenizer
-5. **SMOKE TEST** — chạy ngắn toàn bộ pipeline, chỉ để chắc Run All không crash
-6. Cổng chặn overfit 50 câu (VIỆC SỐ 0)
-7. TASK 11 — khảo sát cấu hình
-8. TASK 15 — huấn luyện thật
-9. TASK 14 — thí nghiệm giết phiên
+Phiên GPU Kaggle bị cắt ở khoảng **12 giờ**, mà 60.000 bước mất hơn 13 giờ.
+Nên `GIO_TOI_DA = 10.5`: trainer tự dừng khi còn sống, lưu checkpoint, đẩy lên
+Hugging Face rồi thoát sạch. Phiên sau chạy lại notebook này là tự kéo về chạy tiếp.
 
-**Smoke test KHÔNG đẩy gì lên Hugging Face** — mục 1.8: ở đồ án trước một lượt
-smoke test đã đè mất checkpoint thật.
+**Hết quota thì đổi tài khoản, gắn `HF_TOKEN` của người đó, Run All lại.**
+Không cần máy của người trước — toàn bộ trạng thái nằm trên Hub.
 """),
 
     md("## Cell 1 — Cài đặt. TOÀN BỘ thư viện nằm ở đây."),
     code(r'''
 # Mọi thư viện cài ở ĐÚNG MỘT CHỖ này. Rải rác giữa notebook thì tới cell thứ 8
 # mới phát hiện thiếu gói, mà lúc đó đã tốn 40 phút GPU.
-#
-# -q cho đỡ ngập log, nhưng KHÔNG nuốt lỗi: ngay bên dưới in phiên bản thật của
-# từng gói để đối chiếu.
 !pip install -q tokenizers==0.21.0 sacrebleu==2.4.3 huggingface_hub==0.27.1 PyYAML==6.0.2
 
 import importlib
@@ -88,8 +95,22 @@ for ten in ["torch", "numpy", "tokenizers", "sacrebleu", "huggingface_hub", "yam
 print("\nCài đặt xong.")
 '''),
 
-    md("## Cell 2 — Dò môi trường, tách chỗ ĐỌC khỏi chỗ GHI"),
+    md(r"""
+## Cell 2 — CẤU HÌNH. Mọi công tắc nằm ở đây.
+
+Đây là cell duy nhất cần sửa tay.
+"""),
     code(r'''
+# ===================== CÔNG TẮC =====================
+
+SMOKE_TEST = True      # True: chạy nháp ~5 phút. False: huấn luyện thật.
+
+REPO_HUB   = "mgbao/envi-nmt-scratch-transformer"    # ĐỔI THÀNH TÀI KHOẢN HF CỦA CẬU
+SEED       = 42
+GIO_TOI_DA = 10.5      # ngân sách mỗi phiên, dưới ngưỡng cắt 12 giờ của Kaggle
+
+# ====================================================
+
 import glob
 import os
 import shutil
@@ -98,12 +119,12 @@ import sys
 from pathlib import Path
 
 # Mục 1.3 của Sưu tập lỗi.md: /kaggle/input CHỈ ĐỌC. Viết theo tư duy Colab, nơi
-# một thư mục vừa là nguồn vừa là chỗ ghi, sẽ chết ngay ở lệnh tạo thư mục đầu tiên.
+# một thư mục vừa là nguồn vừa là chỗ ghi, sẽ chết ngay ở lệnh tạo thư mục đầu.
 IS_KAGGLE = os.path.isdir("/kaggle/working")
 OUT_BASE = Path("/kaggle/working") if IS_KAGGLE else Path.cwd()
 
-# Mục 1.2: độ sâu của dataset trong /kaggle/input KHÔNG cố định, tùy cách tạo.
-# Quét 4 cấp thay vì đoán, và in ra những gì đã quét để còn đối chiếu.
+# Mục 1.2: độ sâu dataset trong /kaggle/input KHÔNG cố định. Quét 4 cấp thay vì
+# đoán, và in ra những gì đã quét để còn đối chiếu.
 CAC_MAU = ["/kaggle/input/*", "/kaggle/input/*/*",
            "/kaggle/input/*/*/*", "/kaggle/input/*/*/*/*"]
 
@@ -127,12 +148,10 @@ if REPO is None:
     for mau in CAC_MAU:
         for d in sorted(glob.glob(mau))[:40]:
             print("   ", d)
-    raise SystemExit(
-        "Add Input > Datasets > thêm bản zip repo, hoặc đặt biến môi trường NMT_ROOT."
-    )
+    raise SystemExit("Add Input > Datasets > thêm bản zip repo, hoặc đặt NMT_ROOT.")
 
 # Repo nằm trong /kaggle/input thì CHỈ ĐỌC, mà script cần ghi results/ và
-# artifacts/. Nên chép sang chỗ ghi được rồi chạy ở đó.
+# artifacts/. Chép sang chỗ ghi được rồi chạy ở đó.
 if IS_KAGGLE and str(REPO).startswith("/kaggle/input"):
     DICH = OUT_BASE / "bku-project"
     if not DICH.exists():
@@ -141,40 +160,8 @@ if IS_KAGGLE and str(REPO).startswith("/kaggle/input"):
 
 os.chdir(REPO)
 sys.path.insert(0, str(REPO / "src"))
-print(f"IS_KAGGLE = {IS_KAGGLE}")
-print(f"REPO      = {REPO}   (ghi được: {os.access(REPO, os.W_OK)})")
-print(f"OUT_BASE  = {OUT_BASE}")
-'''),
 
-    md("## Cell 3 — Kiểm GPU và HF_TOKEN TRƯỚC khi tốn thời gian"),
-    code(r'''
-import torch
 
-print(f"CUDA có sẵn : {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"GPU         : {torch.cuda.get_device_name(0)}")
-    kha_nang = torch.cuda.get_device_capability()
-    print(f"Compute cap : {kha_nang}")
-    # T4 là Turing (7.5) — KHÔNG có phần cứng bf16. Đừng dùng
-    # torch.cuda.is_bf16_supported() để tự chọn: hàm đó tính cả trường hợp giả lập
-    # phần mềm nên trả True ngay trên T4, chạy được nhưng chậm hơn cả fp32.
-    print(f"Dùng fp16   : {'ĐÚNG (T4 không có bf16)' if kha_nang[0] < 8 else 'máy này có bf16'}")
-else:
-    print("KHÔNG CÓ GPU — bật panel phải > Accelerator > GPU T4 x2")
-
-# Kiểm token SỚM. Để tới cuối mới phát hiện thiếu token là mất trắng lượt train.
-from nmt.training.hub_sync import doc_token
-
-TOKEN = doc_token(bat_buoc=False)
-print(f"\nHF_TOKEN    : {'CÓ' if TOKEN else 'KHÔNG CÓ — sẽ không đồng bộ được'}")
-
-# ĐỔI THÀNH TÊN TÀI KHOẢN HUGGING FACE CỦA CẬU
-REPO_HUB = "giabaomaidev/envi-nmt-scratch-transformer"
-print(f"Repo Hub    : {REPO_HUB}")
-'''),
-
-    md("## Cell 4 — Chuẩn bị dữ liệu và tokenizer"),
-    code(r'''
 def chay(lenh, mo_ta=""):
     """Chạy một lệnh, in log trực tiếp, dừng notebook nếu lệnh thất bại."""
     print(f"\n{'=' * 70}\n$ {lenh}\n{'=' * 70}", flush=True)
@@ -184,6 +171,68 @@ def chay(lenh, mo_ta=""):
     return ket_qua
 
 
+print(f"CHẾ ĐỘ    : {'SMOKE TEST (chạy nháp)' if SMOKE_TEST else 'HUẤN LUYỆN THẬT'}")
+print(f"IS_KAGGLE : {IS_KAGGLE}")
+print(f"REPO      : {REPO}   (ghi được: {os.access(REPO, os.W_OK)})")
+print(f"Nhánh Hub : {'smoke/...' if SMOKE_TEST else '(gốc repo)'}")
+'''),
+
+    md(r"""
+## Cell 3 — Kiểm GPU, token, và THỬ GHI THẬT lên Hub
+
+Cell này tốn 10 giây và nó thay thế cho bài học đắt nhất: một lượt chạy 13 tiếng
+đã mất trắng vì repo trên Hub chưa được tạo, nên mọi lần đẩy checkpoint đều
+thất bại âm thầm suốt cả lượt.
+"""),
+    code(r'''
+import torch
+
+print(f"CUDA có sẵn : {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    kha_nang = torch.cuda.get_device_capability()
+    print(f"GPU         : {torch.cuda.get_device_name(0)}")
+    print(f"Compute cap : {kha_nang}")
+    # T4 là Turing (7.5) — KHÔNG có phần cứng bf16. Đừng dùng
+    # torch.cuda.is_bf16_supported() để tự chọn: hàm đó tính cả trường hợp giả lập
+    # phần mềm nên trả True ngay trên T4, chạy được nhưng chậm hơn cả fp32.
+    print(f"Dùng fp16   : {'ĐÚNG (T4 không có bf16)' if kha_nang[0] < 8 else 'máy này có bf16'}")
+elif not SMOKE_TEST:
+    raise SystemExit("KHÔNG CÓ GPU — panel phải > Accelerator > GPU T4 x2")
+
+from nmt.training.hub_sync import doc_token
+
+TOKEN = doc_token(bat_buoc=False)
+if not TOKEN:
+    raise SystemExit(
+        "KHÔNG CÓ HF_TOKEN — dừng ở đây thay vì train xong rồi mất trắng.\n"
+        "Add-ons > Secrets > thêm HF_TOKEN loại Write > BẬT công tắc cho notebook "
+        "này > Run > Restart session."
+    )
+
+# THỬ GHI THẬT. Chứng minh cùng lúc ba thứ: mạng thông, token có quyền Write,
+# repo tồn tại. Cả ba đều là thứ chỉ lộ ra sau nhiều giờ nếu không kiểm ở đây.
+from huggingface_hub import HfApi
+
+api = HfApi()
+api.create_repo(repo_id=REPO_HUB, token=TOKEN, private=True, exist_ok=True)
+Path("kiem_tra_ghi.txt").write_text("thử quyền ghi", encoding="utf-8")
+api.upload_file(
+    path_or_fileobj="kiem_tra_ghi.txt",
+    path_in_repo=("smoke/" if SMOKE_TEST else "") + "kiem_tra_ghi.txt",
+    repo_id=REPO_HUB,
+    token=TOKEN,
+    commit_message="thử quyền ghi trước khi train",
+)
+print(f"\nGHI THỬ LÊN HUB: THÀNH CÔNG -> {REPO_HUB}")
+
+# Mục 1.7: LIỆT KÊ repo để tự mắt thấy đang có gì, đừng bao giờ đoán.
+print("\nFile hiện có trên Hub:")
+for f in sorted(api.list_repo_files(repo_id=REPO_HUB, token=TOKEN)):
+    print("   ", f)
+'''),
+
+    md("## Cell 4 — Chuẩn bị dữ liệu và tokenizer"),
+    code(r'''
 if not Path("data/processed/train.en").exists():
     chay("python scripts/prepare_data.py --config configs/base.yaml")
 else:
@@ -198,84 +247,72 @@ for f in ["data/processed/train.en", "data/processed/train.vi",
           "data/processed/tst2012.en", "artifacts/tokenizer/tokenizer.json"]:
     p = Path(f)
     print(f"  {'có  ' if p.exists() else 'THIẾU'} {f}")
+
+# Tokenizer phải đi cùng checkpoint. Mỗi người tự chạy train_tokenizer.py có thể
+# ra file khác nhau nếu lệch phiên bản thư viện, khi đó checkpoint nạp vào dữ liệu
+# người khác sẽ ra rác vì token ID không khớp.
+from nmt.training.hub_sync import TEN_TOKENIZER, day_len_hub
+from nmt.training.checkpoint import CHE_DO_SMOKE, CHE_DO_THAT
+
+CHE_DO = CHE_DO_SMOKE if SMOKE_TEST else CHE_DO_THAT
+day_len_hub("artifacts/tokenizer/tokenizer.json", REPO_HUB, TEN_TOKENIZER, che_do=CHE_DO)
 '''),
 
-    md(r"""
-## Cell 5 — SMOKE TEST
-
-Chạy ngắn toàn bộ pipeline. Mục đích **duy nhất**: chắc chắn Run All không crash.
-Không học được gì, và **không đẩy gì lên Hugging Face**.
-
-Cell này mà đỏ thì đừng chạy tiếp — sửa xong hãy đi tiếp, đừng đốt giờ GPU.
-"""),
+    md("## Cell 5 — TASK 11: khảo sát cấu hình và ngân sách GPU"),
     code(r'''
-import time
-
-bat_dau = time.perf_counter()
-
-chay("python scripts/benchmark_speed.py --config configs/base.yaml --nhanh",
-     "TASK 11 smoke")
-chay("python scripts/train.py --config configs/base.yaml --smoke",
-     "TASK 15 smoke")
-chay("python scripts/thi_nghiem_phuc_hoi.py --config configs/base.yaml --nhanh",
-     "TASK 14 smoke")
-
-print(f"\n{'=' * 70}")
-print(f"SMOKE TEST QUA — {(time.perf_counter() - bat_dau) / 60:.1f} phút")
-print("Toàn bộ pipeline chạy được. Giờ mới sang phần thật.")
-print("=" * 70)
-'''),
-
-    md(r"""
-## Cell 6 — VIỆC SỐ 0: cổng chặn overfit 50 câu
-
-**Mốc bắt buộc cuối Tuần 2.** Chưa qua thì không được sang TASK 11 hay TASK 15.
-
-Script tự thoát khác 0 khi không đạt, nên cell này đỏ nghĩa là kiến trúc có lỗi
-thật — đọc phần chẩn đoán nó in ra rồi báo cả nhóm, **đừng tự sửa `src/` một mình**.
-"""),
-    code(r'''
-chay("python scripts/overfit_sanity.py --config configs/base.yaml",
-     "cổng chặn overfit 50 câu")
-
-from IPython.display import Image, display
-
-if Path("results/overfit_loss.png").exists():
-    display(Image("results/overfit_loss.png"))
-'''),
-
-    md("## Cell 7 — TASK 11: khảo sát cấu hình và ngân sách GPU"),
-    code(r'''
-chay("python scripts/benchmark_speed.py --config configs/base.yaml --so-buoc 30",
+co_nhanh = "--nhanh" if SMOKE_TEST else "--so-buoc 30"
+chay(f"python scripts/benchmark_speed.py --config configs/base.yaml {co_nhanh}",
      "TASK 11")
 
 print("\n" + Path("docs/ngan_sach_tinh_toan.md").read_text(encoding="utf-8"))
 '''),
 
     md(r"""
-## Cell 8 — TASK 15: huấn luyện thật
+## Cell 6 — VIỆC SỐ 0: cổng chặn overfit 50 câu
 
-Checkpoint và log được đẩy lên Hugging Face **sau mỗi mốc**, không đợi tới cuối.
-Kaggle ngắt phiên giữa chừng thì chạy lại notebook với `--tiep-tuc` là chạy tiếp
-đúng chỗ cũ — người khác cũng dùng được, không cần máy của người trước.
+**Mốc bắt buộc cuối Tuần 2.** Bỏ qua ở lượt smoke vì nó cần chạy thật mới có ý
+nghĩa. Cell này đỏ nghĩa là kiến trúc có lỗi thật — đọc phần chẩn đoán nó in ra
+rồi báo cả nhóm, **đừng tự sửa `src/` một mình**.
 """),
     code(r'''
-# Lần đầu: bỏ --tiep-tuc. Lần sau, hoặc người khác chạy tiếp: THÊM --tiep-tuc.
-TIEP_TUC = Path("artifacts/checkpoints").exists() and any(
-    Path("artifacts/checkpoints").rglob("moi_nhat.pt")
-)
-co_tiep_tuc = "--tiep-tuc" if TIEP_TUC else ""
-print(f"Chế độ: {'CHẠY TIẾP từ checkpoint' if TIEP_TUC else 'huấn luyện từ đầu'}")
+if SMOKE_TEST:
+    print("Bỏ qua cổng chặn overfit ở lượt smoke — nó cần chạy đủ mới có ý nghĩa.")
+else:
+    chay("python scripts/overfit_sanity.py --config configs/base.yaml",
+         "cổng chặn overfit 50 câu")
 
-chay(f"python scripts/train.py --config configs/base.yaml --seed 42 "
-     f"--repo-hub {REPO_HUB} {co_tiep_tuc}", "TASK 15")
+    from IPython.display import Image, display
+
+    if Path("results/overfit_loss.png").exists():
+        display(Image("results/overfit_loss.png"))
+'''),
+
+    md(r"""
+## Cell 7 — TASK 15: huấn luyện
+
+`--tiep-tuc` LUÔN bật. Chưa có checkpoint thì script tự huấn luyện từ đầu; có rồi
+thì kéo từ Hub về chạy tiếp đúng bước đang dở.
+
+Đừng kiểm bằng đĩa cục bộ để quyết định bật hay không: phiên Kaggle mới luôn có
+`/kaggle/working` trắng, nên kiểm kiểu đó lúc nào cũng ra "chưa có" và lượt chạy
+tiếp theo lại bắt đầu lại từ số 0.
+"""),
+    code(r'''
+if SMOKE_TEST:
+    # Vài bước trên vài trăm câu. Không học được gì, chỉ để chắc không crash.
+    chay(f"python scripts/train.py --config configs/base.yaml --seed {SEED} "
+         f"--repo-hub {REPO_HUB} --smoke", "TASK 15 smoke")
+else:
+    chay(f"python scripts/train.py --config configs/base.yaml --seed {SEED} "
+         f"--repo-hub {REPO_HUB} --tiep-tuc --gio-toi-da {GIO_TOI_DA}", "TASK 15")
 
 print("\n" + Path("docs/bao_cao_huan_luyen.md").read_text(encoding="utf-8"))
 '''),
 
-    md("## Cell 9 — TASK 14: thí nghiệm giết phiên và phục hồi"),
+    md("## Cell 8 — TASK 14: thí nghiệm giết phiên và phục hồi"),
     code(r'''
-chay("python scripts/thi_nghiem_phuc_hoi.py --config configs/base.yaml --so-buoc 60",
+co_nhanh = "--nhanh" if SMOKE_TEST else "--so-buoc 60"
+chay(f"python scripts/thi_nghiem_phuc_hoi.py --config configs/base.yaml {co_nhanh}",
      "TASK 14")
 
 from IPython.display import Image, display
@@ -284,25 +321,33 @@ display(Image("results/thi_nghiem_phuc_hoi.png"))
 print(Path("docs/thi_nghiem_phuc_hoi.md").read_text(encoding="utf-8"))
 '''),
 
-    md("## Cell 10 — Đẩy nốt kết quả lên Hub và tổng kết"),
+    md("## Cell 9 — Đẩy kết quả lên Hub và tổng kết"),
     code(r'''
-from nmt.training.hub_sync import dam_bao_repo, day_thu_muc_len_hub, liet_ke_file
+from nmt.training.hub_sync import day_thu_muc_len_hub, liet_ke_file
 
-if TOKEN:
-    dam_bao_repo(REPO_HUB)
-    day_thu_muc_len_hub("results", REPO_HUB, "results")
-    day_thu_muc_len_hub("docs", REPO_HUB, "docs")
+day_thu_muc_len_hub("results", REPO_HUB, "results", che_do=CHE_DO)
+day_thu_muc_len_hub("docs", REPO_HUB, "docs", che_do=CHE_DO)
+day_thu_muc_len_hub("artifacts/checkpoints", REPO_HUB, "checkpoints", che_do=CHE_DO)
 
-    # Mục 1.7: LIỆT KÊ repo để tự mắt thấy file đã lên đúng chỗ, đừng đoán.
-    print("\nFile đang có trên Hub:")
-    for f in sorted(liet_ke_file(REPO_HUB)):
-        print("   ", f)
-else:
-    print("Không có HF_TOKEN nên bỏ qua bước đẩy lên Hub.")
+print("\nFile đang có trên Hub:")
+for f in sorted(liet_ke_file(REPO_HUB)):
+    print("   ", f)
 
 print(f"\n{'=' * 70}")
-print("XONG PHASE 3. Nhớ bấm SAVE VERSION, nếu không thì /kaggle/working mất sạch")
-print("khi đóng trình duyệt (mục 1.5 — lần mất đầu tiên tốn 3 giờ GPU).")
+if SMOKE_TEST:
+    print("SMOKE TEST QUA. Toàn bộ pipeline chạy được và đẩy Hub được.")
+    print()
+    print("BƯỚC TIẾP THEO:")
+    print("  1. Lên Cell 2, đổi SMOKE_TEST = False")
+    print("  2. Run All lại")
+    print("  3. Nhớ Save Version, nếu không thì /kaggle/working mất sạch")
+else:
+    print("XONG MỘT PHIÊN HUẤN LUYỆN.")
+    print()
+    print("Đọc dòng cuối của Cell 7: còn bước thì mở phiên Kaggle mới, Run All lại.")
+    print("Checkpoint đã nằm trên Hub nên tài khoản nào chạy tiếp cũng được.")
+    print()
+    print("NHỚ BẤM SAVE VERSION.")
 print("=" * 70)
 '''),
 ]

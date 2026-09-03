@@ -312,16 +312,21 @@ def viet_bao_cao(
     ghi("")
 
     ghi("## Bảng ngân sách theo số token mỗi batch\n")
-    ghi("| số token/batch | giây/bước | token/giây | VRAM đỉnh (MB) | bước/epoch "
-        "| giờ/epoch | số epoch | tổng giờ GPU | ngân sách | khả thi |")
-    ghi("|---|---|---|---|---|---|---|---|---|---|")
+    ghi("Lưu ý cách đọc: **giây/micro-batch** là thời gian một lượt forward+backward,")
+    ghi("còn **giây/bước** là thời gian một bước optimizer đầy đủ, tức đã nhân với")
+    ghi(f"`so_buoc_cong_don_gradient` = {cfg.toi_uu.so_buoc_cong_don_gradient}. Cột tổng giờ")
+    ghi("GPU tính theo cột thứ hai, vì `huan_luyen.so_buoc_toi_da` đếm bước optimizer.\n")
+    ghi("| số token/batch | giây/micro-batch | giây/bước | token/giây | VRAM đỉnh (MB) "
+        "| bước/epoch | giờ/epoch | số epoch | tổng giờ GPU | ngân sách | khả thi |")
+    ghi("|---|---|---|---|---|---|---|---|---|---|---|")
     for hang in ngan_sach:
         if "loi" in hang:
-            ghi(f"| {hang['so_token_moi_batch']} | — | — | — | — | — | — | — "
+            ghi(f"| {hang['so_token_moi_batch']} | — | — | — | — | — | — | — | — "
                 f"| {NGAN_SACH_GIO_MOI_TUAN:.0f} h | **{hang['loi']}** |")
             continue
         kha_thi = "CÓ" if hang["tong_gio_gpu"] <= NGAN_SACH_GIO_MOI_TUAN else "KHÔNG"
         ghi(f"| {hang['so_token_moi_batch']} | {hang['giay_moi_buoc']:.4f} "
+            f"| {hang['giay_moi_buoc_optimizer']:.4f} "
             f"| {hang['token_moi_giay']:,.0f} | {hang['bo_nho_dinh_mb']:.0f} "
             f"| {hang['buoc_moi_epoch']:,} | {hang['gio_moi_epoch']:.2f} "
             f"| {hang['so_epoch']} | {hang['tong_gio_gpu']:.2f} "
@@ -430,16 +435,29 @@ def main() -> None:
         else:
             buoc_moi_epoch = 0
 
-        gio_moi_epoch = buoc_moi_epoch * ket_qua["giay_moi_buoc"] / 3600
+        # HAI CHỮ "BƯỚC" KHÁC NHAU — chỗ này từng tính sai và làm báo cáo lệch 4 lần.
+        #
+        #   do_mot_cau_hinh đo thời gian mỗi MICRO-BATCH (một lượt forward+backward)
+        #   huan_luyen.so_buoc_toi_da đếm số BƯỚC OPTIMIZER
+        #
+        # Mà mỗi bước optimizer gồm so_buoc_cong_don_gradient micro-batch. Nhân
+        # thẳng hai con số với nhau là ước lượng thấp đi đúng bằng hệ số cộng dồn.
+        # Bản đầu báo "2,60 giờ GPU" trong khi lượt chạy thật mất hơn 13 tiếng.
+        so_cong_don = cfg_goc.toi_uu.so_buoc_cong_don_gradient
+        giay_moi_buoc_optimizer = ket_qua["giay_moi_buoc"] * so_cong_don
+
+        gio_moi_epoch = buoc_moi_epoch * giay_moi_buoc_optimizer / 3600
         so_epoch = (
             max(1, round(cfg_goc.huan_luyen.so_buoc_toi_da / buoc_moi_epoch))
             if buoc_moi_epoch else 0
         )
-        tong_gio = cfg_goc.huan_luyen.so_buoc_toi_da * ket_qua["giay_moi_buoc"] / 3600
+        tong_gio = cfg_goc.huan_luyen.so_buoc_toi_da * giay_moi_buoc_optimizer / 3600
 
         ngan_sach.append({
             "so_token_moi_batch": so_token,
             **ket_qua,
+            "so_buoc_cong_don": so_cong_don,
+            "giay_moi_buoc_optimizer": giay_moi_buoc_optimizer,
             "buoc_moi_epoch": buoc_moi_epoch,
             "gio_moi_epoch": gio_moi_epoch,
             "so_epoch": so_epoch,
