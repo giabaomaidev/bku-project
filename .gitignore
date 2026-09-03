@@ -71,3 +71,6 @@ desktop.ini
 
 # Output Kaggle tai ve de dong goi lai, rat nang, khong bao gio commit
 OUTPUT_KAGGEL/
+
+# Output Kaggle lan 2
+output_kaggle_huggingface/
