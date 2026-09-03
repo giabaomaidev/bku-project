@@ -52,6 +52,26 @@ from nmt.training.scheduler import tao_scheduler
 TEN_FILE_MOI_NHAT = "moi_nhat.pt"
 TEN_FILE_TOT_NHAT = "tot_nhat.pt"
 
+# TOÀN BỘ cột của file log, khai báo sẵn ở một chỗ.
+#
+# BoGhiLog chốt header theo DÒNG GHI ĐẦU TIÊN rồi dùng extrasaction="ignore" cho
+# mọi dòng sau. Dòng đầu là dòng train (không có loss_dev), nên mọi dòng đánh giá
+# về sau bị vứt mất loss_dev và perplexity_dev — im lặng, không lỗi.
+#
+# Lượt chạy 11.000 bước đầu tiên dính đúng lỗi này: metrics.csv chỉ còn cột train,
+# các dòng đánh giá ra thành "11000,,,,". Dừng sớm vẫn đúng vì nó đọc giá trị
+# trong bộ nhớ, nhưng báo cáo mất hẳn đường loss dev.
+#
+# Cách chữa: mọi lần ghi đều truyền ĐỦ danh sách cột này, thiếu thì để None.
+CAC_COT_LOG = (
+    "loss_train",
+    "loss_dev",
+    "perplexity_dev",
+    "learning_rate",
+    "giay_moi_buoc",
+    "token_moi_giay",
+)
+
 
 def chon_thiet_bi() -> torch.device:
     """CUDA nếu có, rồi tới MPS của máy Mac, cuối cùng là CPU."""
@@ -200,6 +220,17 @@ class Trainer:
 
             self.epoch += 1
             self.buoc_trong_epoch = 0
+
+    def _ghi_log(self, buoc: int, **so_lieu) -> None:
+        """Ghi log với ĐỦ mọi cột, thiếu thì để None.
+
+        Xem chú thích của CAC_COT_LOG: không làm vậy thì cột nào không có mặt ở
+        dòng ghi đầu tiên sẽ bị vứt im lặng ở mọi dòng sau.
+        """
+        if self.logger is None:
+            return
+        day_du = {ten: so_lieu.get(ten) for ten in CAC_COT_LOG}
+        self.logger.ghi(buoc=buoc, **day_du)
 
     def _chuyen_len_thiet_bi(self, batch: dict) -> dict:
         return {
@@ -398,8 +429,8 @@ class Trainer:
             # --- ghi log -----------------------------------------------------
             if self.logger is not None and self.buoc % 50 == 0:
                 giay_troi = time.perf_counter() - moc_thoi_gian
-                self.logger.ghi(
-                    buoc=self.buoc,
+                self._ghi_log(
+                    self.buoc,
                     loss_train=loss_train,
                     learning_rate=self.scheduler.learning_rate_hien_tai(),
                     giay_moi_buoc=giay_troi / 50,
@@ -419,8 +450,7 @@ class Trainer:
                     loss_dev = so_lieu["loss_dev"]
                     print(f"  [đánh giá] bước {self.buoc} · loss_dev {loss_dev:.4f} · "
                           f"ppl {so_lieu['perplexity_dev']:.2f}")
-                    if self.logger is not None:
-                        self.logger.ghi(buoc=self.buoc, **so_lieu)
+                    self._ghi_log(self.buoc, **so_lieu)
 
                     if loss_dev < self.loss_dev_tot_nhat:
                         self.loss_dev_tot_nhat = loss_dev

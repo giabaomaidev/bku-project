@@ -162,6 +162,48 @@ os.chdir(REPO)
 sys.path.insert(0, str(REPO / "src"))
 
 
+def gop_dataset_du_lieu():
+    """Gộp dataset checkpoint/dữ liệu (nếu có gắn) vào bản làm việc.
+
+    Dataset thứ hai do scripts/dong_goi_tiep_tuc.py sinh ra, chứa:
+        artifacts/checkpoints/<ten chạy>/moi_nhat.pt
+        artifacts/tokenizer/tokenizer.json
+        results/logs/<ten chạy>/metrics.csv
+        data/processed/*.en, *.vi
+
+    Thiếu bước gộp này thì --tiep-tuc đi tìm checkpoint trong /kaggle/working,
+    không thấy, rồi lặng lẽ huấn luyện lại từ số 0 — đúng kiểu hỏng im lặng đắt
+    nhất: mất cả lượt GPU mà không có lỗi nào báo ra.
+    """
+    da_gop = []
+    for mau in CAC_MAU:
+        for d in sorted(glob.glob(mau)):
+            p = Path(d)
+            # Chỉ nhận thư mục trông giống gói dữ liệu, và bỏ qua dataset mã nguồn.
+            co_du_lieu = (
+                (p / "artifacts" / "checkpoints").is_dir()
+                or (p / "artifacts" / "tokenizer").is_dir()
+                or (p / "data" / "processed").is_dir()
+            )
+            if not co_du_lieu or (p / "src" / "nmt").is_dir():
+                continue
+            for nhanh in ("artifacts", "data", "results"):
+                if (p / nhanh).is_dir():
+                    shutil.copytree(p / nhanh, REPO / nhanh, dirs_exist_ok=True)
+                    da_gop.append(f"{p.name}/{nhanh}")
+    return da_gop
+
+
+DA_GOP = gop_dataset_du_lieu()
+if DA_GOP:
+    print("Đã gộp dataset dữ liệu:", ", ".join(DA_GOP))
+    for f in sorted(REPO.glob("artifacts/checkpoints/*/*.pt")):
+        print(f"   checkpoint: {f.relative_to(REPO)}  "
+              f"({f.stat().st_size / 1024 ** 2:.0f} MB)")
+else:
+    print("Không có dataset dữ liệu nào được gắn — sẽ tải và huấn luyện từ đầu.")
+
+
 def chay(lenh, mo_ta=""):
     """Chạy một lệnh, in log trực tiếp, dừng notebook nếu lệnh thất bại."""
     print(f"\n{'=' * 70}\n$ {lenh}\n{'=' * 70}", flush=True)
