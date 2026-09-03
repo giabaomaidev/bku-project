@@ -4,17 +4,18 @@
 
 ## Cách làm
 
-- **Lượt A**: chạy liền một mạch 9 bước.
-- **Lượt B**: cùng seed, nhưng bị giết ở bước 3 và 6. Mỗi lần bị giết thì mọi đối tượng
+- **Lượt A**: chạy liền một mạch 60 bước.
+- **Lượt B**: cùng seed, nhưng bị giết ở bước 20 và 40. Mỗi lần bị giết thì mọi đối tượng
   trong bộ nhớ bị vứt bỏ, dựng lại từ số 0 rồi nạp checkpoint chạy tiếp — đúng
   như khi Kaggle ngắt phiên thật.
-- Seed: 42 · dữ liệu: batch giả
+- Seed: 42 · dữ liệu: tập con IWSLT thật
+- Cấu hình: `configs/base.yaml` · thí nghiệm `iwslt_base_v1`
 
 ## Kết quả
 
 | chỉ số | giá trị |
 |---|---|
-| số bước so sánh | 9 |
+| số bước so sánh | 60 |
 | chênh lệch trung bình | 0.0000% |
 | **chênh lệch lớn nhất** | **0.0000%** |
 | ngưỡng yêu cầu | 1.0% |

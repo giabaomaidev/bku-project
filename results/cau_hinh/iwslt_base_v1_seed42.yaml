@@ -1,0 +1,62 @@
+thi_nghiem:
+  ten: iwslt_base_v1
+  seed: 42
+  deterministic: true
+  hub_repo: <ten-tai-khoan-hf>/envi-nmt-scratch-transformer
+  thu_muc_log: results/logs
+  thu_muc_checkpoint: artifacts/checkpoints
+  duong_dan_config: configs/base.yaml
+du_lieu:
+  train: data/processed/train
+  dev: data/processed/tst2012
+  test: data/processed/tst2013
+  tokenizer: artifacts/tokenizer/tokenizer.json
+  vocab_size: 32000
+  do_dai_toi_da: 100
+  so_token_moi_batch: 4096
+  gom_theo_do_dai: true
+  so_worker: 2
+mo_hinh:
+  d_model: 512
+  so_head: 8
+  so_lop_encoder: 6
+  so_lop_decoder: 6
+  dropout: 0.3
+  chia_se_embedding: true
+  ma_hoa_vi_tri: rope
+  rope_theta: 10000
+  rope_ap_cho_cross_attention: false
+  vi_tri_chuan_hoa: pre
+  co_chuan_hoa_cuoi: true
+  kieu_chuan_hoa: rmsnorm
+  norm_eps: 1.0e-06
+  kieu_ffn: swiglu
+  d_ff: 688
+  khoi_tao: xavier
+toi_uu:
+  optimizer: adamw
+  learning_rate: 0.0007
+  betas:
+  - 0.9
+  - 0.98
+  eps: 1.0e-09
+  weight_decay: 0.01
+  scheduler: co_dinh
+  so_buoc_warmup: 4000
+  label_smoothing: 0.0
+  so_buoc_cong_don_gradient: 4
+  cat_gradient_norm: 1.0
+  do_chinh_xac_hon_hop: true
+  kieu_do_chinh_xac: fp16
+  grad_scaler_init: 65536.0
+huan_luyen:
+  so_buoc_toi_da: 60000
+  danh_gia_moi: 1000
+  luu_checkpoint_moi: 2000
+  dung_som_sau: 5
+sinh_cau:
+  cach: greedy
+  beam_size: 4
+  he_so_phat_do_dai: 1.0
+  do_dai_toi_da_khi_dich: 128
+  dung_kv_cache: false

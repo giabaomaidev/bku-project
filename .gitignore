@@ -74,3 +74,22 @@ OUTPUT_KAGGEL/
 
 # Output Kaggle lan 2
 output_kaggle_huggingface/
+
+# ===== Bằng chứng cho báo cáo =====
+# Mặc định results/ bị chặn vì chứa checkpoint và file tạm. Nhưng mấy file dưới
+# đây là SỐ LIỆU GỐC của báo cáo: chỉ ~215 KB, mà mất là phải chạy lại GPU mới có.
+# Phủ định phải đặt SAU các dòng chặn ở trên thì mới thắng.
+!results/*.csv
+!results/*.png
+!results/*.yaml
+!results/bao_cao/
+!results/bao_cao/**
+!results/cau_hinh/
+!results/cau_hinh/**
+!results/logs/
+!results/logs/**/
+!results/logs/**/metrics.csv
+# Trừ tensorboard ra: file nhị phân, sinh lại được, và mỗi lần chạy lại đẻ một file mới
+results/logs/**/tensorboard/
+# File cấu hình gộp theo tên CŨ, đã thay bằng results/cau_hinh/<ten_chay>.yaml
+results/cau_hinh_da_gop.yaml

@@ -1,0 +1,2 @@
+ten_chay,cau_hinh,seed,kieu_chuan_hoa,vi_tri_chuan_hoa,kieu_ffn,d_ff,ma_hoa_vi_tri,scheduler,label_smoothing,buoc_cuoi,loss_dev_tot_nhat,perplexity_dev,dung_som,da_xong_toan_bo,gio_chay
+iwslt_base_v1_seed42,configs/base.yaml,42,rmsnorm,pre,swiglu,688,rope,co_dinh,0.0,17000,2.3866,10.88,True,True,2.41
